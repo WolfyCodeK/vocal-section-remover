@@ -4,14 +4,114 @@ import sys
 from pydub import AudioSegment
 import subprocess
 import shutil
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPushButton, QLineEdit, QLabel, QFileDialog, QListWidget, QSlider, QHBoxLayout
+from PyQt5.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QPushButton,
+    QLabel,
+    QVBoxLayout,
+    QHBoxLayout,
+    QSlider,
+    QListWidget,
+    QLineEdit,
+    QWidget,
+    QGroupBox,
+    QFileDialog
+)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 
 # Initialize Pygame mixer
-pygame.mixer.init()
+pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
+pygame.mixer.music.set_volume(1.0)  # Set initial volume to maximum
 
 # Ensure the output directory exists
 os.makedirs('output/temp_section', exist_ok=True)
+
+def apply_dark_mode(app):
+    dark_stylesheet = """
+    QMainWindow, QWidget {
+        background-color: #2E2E2E;
+        color: #FFFFFF;
+    }
+    QLabel {
+        color: #FFFFFF;
+    }
+    QPushButton {
+        background-color: #444444;
+        color: #FFFFFF;
+        border: 1px solid #555555;
+        border-radius: 5px;
+        padding: 5px;
+    }
+    QPushButton:hover {
+        background-color: #555555;
+    }
+    QLineEdit {
+        background-color: #3E3E3E;
+        color: #FFFFFF;
+        border: 1px solid #555555;
+        border-radius: 5px;
+        padding: 5px;
+    }
+    QListWidget {
+        background-color: #3E3E3E;
+        color: #FFFFFF;
+        border: 1px solid #555555;
+        border-radius: 5px;
+    }
+    QSlider::groove:horizontal {
+        background: #3E3E3E;
+        height: 5px;
+    }
+    QSlider::handle:horizontal {
+        background: #FFFFFF;
+        border: 1px solid #555555;
+        width: 10px;
+        margin: -5px 0;
+        border-radius: 5px;
+    }
+    QSlider::groove:vertical {
+        background: #3E3E3E;
+        width: 5px;
+    }
+    QSlider::handle:vertical {
+        background: #FFFFFF;
+        border: 1px solid #555555;
+        height: 10px;
+        margin: 0 -5px;
+        border-radius: 5px;
+    }
+    QGroupBox {
+        border: 1px solid #555555;
+        border-radius: 5px;
+        margin-top: 10px;
+        padding-top: 10px;
+    }
+    QGroupBox::title {
+        subcontrol-origin: margin;
+        subcontrol-position: top center;
+        padding: 0 5px;
+        color: #FFFFFF;
+        background-color: #2E2E2E;
+    }
+    QLabel[volume="true"] {
+        font-size: 14px;
+        min-width: 40px;
+        padding: 2px;
+    }
+    QSlider::handle:vertical {
+        background: #FFFFFF;
+        border: 1px solid #555555;
+        height: 10px;
+        margin: 0 -4px;
+        border-radius: 5px;
+    }
+    QSlider::groove:vertical {
+        background: #3E3E3E;
+        width: 3px;
+    }
+    """
+    app.setStyleSheet(dark_stylesheet)
 
 class AudioProcessor(QThread):
     status_update = pyqtSignal(str)
@@ -82,104 +182,179 @@ class AudioProcessor(QThread):
 class AudioApp(QMainWindow):
     def __init__(self):
         super().__init__()
+        # Initialize pygame mixer with better audio quality
+        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
+        pygame.mixer.music.set_volume(1.0)  # Set initial volume to maximum
+        
         self.initUI()
         self.song = None
         self.song_path = None
         self.sections = []
         self.is_playing = False
         self.current_time = 0
-        self.audio_processor = None  # To keep track of the audio processor thread
+        self.song_length = 0
+        self.audio_processor = None
 
     def initUI(self):
         self.setWindowTitle("Audio Section Editor")
+        self.setGeometry(300, 300, 500, 600)
 
-        # Layout
-        layout = QVBoxLayout()
+        # Main layout
+        main_layout = QVBoxLayout()
 
-        # Load song button
-        self.load_button = QPushButton("Load Song", self)
+        # Song loading section
+        song_group = QGroupBox("Load Song")
+        song_layout = QVBoxLayout()
+        self.load_button = QPushButton("Load Song")
+        self.load_button.setIcon(self.style().standardIcon(QPushButton().style().SP_DirOpenIcon))
         self.load_button.clicked.connect(self.load_song)
-        layout.addWidget(self.load_button)
+        self.song_label = QLabel("No song loaded")
+        self.song_label.setStyleSheet("color: gray; font-style: italic;")
+        song_layout.addWidget(self.load_button)
+        song_layout.addWidget(self.song_label)
+        song_group.setLayout(song_layout)
+        main_layout.addWidget(song_group)
 
-        # Display the loaded song path
-        self.song_label = QLabel("No song loaded", self)
-        layout.addWidget(self.song_label)
-
-        # Play/Pause button
-        self.play_button = QPushButton("Play", self)
+        # Playback controls
+        playback_group = QGroupBox("Playback Controls")
+        playback_layout = QHBoxLayout()
+        self.play_button = QPushButton("Play")
+        self.play_button.setIcon(self.style().standardIcon(QPushButton().style().SP_MediaPlay))
         self.play_button.clicked.connect(self.toggle_play)
-        layout.addWidget(self.play_button)
-
-        # Stop button
-        self.stop_button = QPushButton("Stop", self)
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setIcon(self.style().standardIcon(QPushButton().style().SP_MediaStop))
         self.stop_button.clicked.connect(self.stop_audio)
-        layout.addWidget(self.stop_button)
+        playback_layout.addWidget(self.play_button)
+        playback_layout.addWidget(self.stop_button)
+        playback_group.setLayout(playback_layout)
+        main_layout.addWidget(playback_group)
 
-        # Timeline and Volume Control Layout
-        timeline_layout = QHBoxLayout()
-
-        # Timeline slider (much longer)
-        self.timeline_slider = QSlider(Qt.Horizontal, self)
+        # Timeline and volume layout
+        timeline_volume_row = QHBoxLayout()
+        
+        # Timeline group
+        timeline_group = QGroupBox("Timeline")
+        timeline_layout = QVBoxLayout()
+        
+        # Add time display label
+        self.time_display = QLabel("00:00 / 00:00")
+        timeline_layout.addWidget(self.time_display)
+        
+        # Timeline slider
+        self.timeline_slider = QSlider(Qt.Horizontal)
         self.timeline_slider.setRange(0, 100)
         self.timeline_slider.valueChanged.connect(self.on_slider_change)
         timeline_layout.addWidget(self.timeline_slider)
-
-        # Volume slider (vertical)
-        self.volume_slider = QSlider(Qt.Vertical, self)
+        
+        timeline_group.setLayout(timeline_layout)
+        timeline_volume_row.addWidget(timeline_group)
+        
+        # Volume group
+        volume_group = QGroupBox("Volume")
+        volume_group.setFixedWidth(80)  # Make it narrow
+        volume_layout = QVBoxLayout()
+        volume_layout.setSpacing(2)  # Reduce spacing between elements
+        
+        # Volume icon/label
+        volume_label = QLabel("🔊")  # Unicode speaker icon
+        volume_label.setAlignment(Qt.AlignCenter)
+        volume_layout.addWidget(volume_label)
+        
+        # Volume slider
+        self.volume_slider = QSlider(Qt.Vertical)
+        self.volume_slider.setFixedHeight(80)  # Make it shorter
         self.volume_slider.setRange(0, 100)
-        self.volume_slider.setValue(100)  # Default volume is 100%
+        self.volume_slider.setValue(100)  # Set initial value to maximum
         self.volume_slider.valueChanged.connect(self.set_volume)
-        timeline_layout.addWidget(self.volume_slider)
+        self.volume_slider.setTickPosition(QSlider.TicksBothSides)
+        self.volume_slider.setTickInterval(25)
+        volume_layout.addWidget(self.volume_slider, alignment=Qt.AlignCenter)
+        
+        # Volume percentage
+        self.volume_percentage = QLabel("100%")
+        self.volume_percentage.setAlignment(Qt.AlignCenter)
+        volume_layout.addWidget(self.volume_percentage)
+        
+        volume_group.setLayout(volume_layout)
+        timeline_volume_row.addWidget(volume_group)
+        
+        main_layout.addLayout(timeline_volume_row)
 
-        # Volume percentage label
-        self.volume_percentage = QLabel("100%", self)
-        timeline_layout.addWidget(self.volume_percentage)
-
-        layout.addLayout(timeline_layout)
-
-        # Time display label
-        self.time_display = QLabel("0:00 / 0:00", self)
-        layout.addWidget(self.time_display)
-
-        # Start and End time input fields
-        self.start_time_input = QLineEdit(self)
-        self.start_time_input.setPlaceholderText("Enter start time in seconds")
-        layout.addWidget(self.start_time_input)
-
-        self.end_time_input = QLineEdit(self)
-        self.end_time_input.setPlaceholderText("Enter end time in seconds")
-        layout.addWidget(self.end_time_input)
-
-        # Add Section button
-        self.add_section_button = QPushButton("Add Section", self)
+        # Section controls
+        section_group = QGroupBox("Sections")  
+        section_layout = QVBoxLayout()
+        input_layout = QHBoxLayout()
+        self.start_time_input = QLineEdit()
+        self.start_time_input.setPlaceholderText("Start time (s)")
+        self.end_time_input = QLineEdit()
+        self.end_time_input.setPlaceholderText("End time (s)")
+        input_layout.addWidget(self.start_time_input)
+        input_layout.addWidget(self.end_time_input)
+        self.add_section_button = QPushButton("Add Section")
         self.add_section_button.clicked.connect(self.add_section)
-        layout.addWidget(self.add_section_button)
-
-        # List to display sections added
-        self.section_list_widget = QListWidget(self)
-        layout.addWidget(self.section_list_widget)
-
-        # Delete Section button
-        self.delete_section_button = QPushButton("Delete Selected Section", self)
+        section_layout.addLayout(input_layout)
+        section_layout.addWidget(self.add_section_button)
+        self.section_list_widget = QListWidget()
+        section_layout.addWidget(self.section_list_widget)
+        self.delete_section_button = QPushButton("Delete Selected Section")
         self.delete_section_button.clicked.connect(self.delete_section)
-        layout.addWidget(self.delete_section_button)
+        section_layout.addWidget(self.delete_section_button)
+        section_group.setLayout(section_layout)
+        main_layout.addWidget(section_group)
 
         # Process button
-        self.process_button = QPushButton("Process Sections", self)
+        self.process_button = QPushButton("Process Sections")
+        self.process_button.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
         self.process_button.clicked.connect(self.process_sections)
-        layout.addWidget(self.process_button)
+        main_layout.addWidget(self.process_button)
 
         # Status label
-        self.status_label = QLabel("Status: Waiting for song...", self)
-        layout.addWidget(self.status_label)
+        self.status_label = QLabel("Status: Waiting for song...")
+        self.status_label.setStyleSheet("color: blue;")
+        main_layout.addWidget(self.status_label)
 
-        # Set main widget and layout
+        # Apply main layout
         container = QWidget()
-        container.setLayout(layout)
+        container.setLayout(main_layout)
         self.setCentralWidget(container)
 
-        self.setGeometry(300, 300, 400, 500)
-
+        # Apply stylesheet for modern look
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #F7F7F7;
+            }
+            QPushButton {
+                font-size: 14px;
+                padding: 8px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #E0E0E0;
+            }
+            QLineEdit {
+                border: 1px solid #CCCCCC;
+                border-radius: 4px;
+                padding: 6px;
+            }
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #D0D0D0;
+                border-radius: 5px;
+                margin-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 3px;
+            }
+            QLabel {
+                font-size: 12px;
+            }
+            QSlider {
+                height: 20px;
+            }
+        """)
+        
     def load_song(self):
         file, _ = QFileDialog.getOpenFileName(self, "Load Song", "", "Audio Files (*.mp3 *.wav)")
         if file:
@@ -188,11 +363,13 @@ class AudioApp(QMainWindow):
             self.song_label.setText(f"Loaded: {os.path.basename(self.song_path)}")
             self.status_label.setText("Song loaded successfully!")
 
-            # Load the audio file using pygame
-            pygame.mixer.music.load(file)
-            self.song_length = pygame.mixer.Sound(file).get_length()
+            # Calculate the song length using AudioSegment
+            self.song_length = len(self.song) / 1000  # Convert milliseconds to seconds
             self.timeline_slider.setRange(0, int(self.song_length))
             self.current_time = 0
+
+            # Load the audio file using pygame
+            pygame.mixer.music.load(file)
 
     def toggle_play(self):
         if self.song is None:
@@ -203,7 +380,10 @@ class AudioApp(QMainWindow):
             pygame.mixer.music.pause()
             self.play_button.setText("Play")
         else:
-            pygame.mixer.music.play(start=self.current_time)
+            if self.current_time == 0:
+                pygame.mixer.music.play()  # Start from beginning
+            else:
+                pygame.mixer.music.play(start=self.current_time)
             self.play_button.setText("Pause")
             self.update_time()  # Start updating the time display
         self.is_playing = not self.is_playing
@@ -218,7 +398,12 @@ class AudioApp(QMainWindow):
     def update_time(self):
         if self.is_playing:
             # Get the current time of the song (in seconds)
-            self.current_time = pygame.mixer.music.get_pos() / 1000.0
+            pos = pygame.mixer.music.get_pos()
+            if pos == -1:  # Music has stopped
+                self.stop_audio()
+                return
+                
+            self.current_time = pos / 1000.0
             self.timeline_slider.setValue(int(self.current_time))
             
             # Update the time display
@@ -230,10 +415,14 @@ class AudioApp(QMainWindow):
             QTimer.singleShot(100, self.update_time)
 
     def on_slider_change(self):
+        if not self.song:  # Check if song is loaded
+            return
+            
         # Update the current time when the slider is moved
         self.current_time = self.timeline_slider.value()
         if self.is_playing:
             pygame.mixer.music.play(start=self.current_time)
+
         # Update the time display
         minutes, seconds = divmod(int(self.current_time), 60)
         total_minutes, total_seconds = divmod(int(self.song_length), 60)
@@ -242,7 +431,7 @@ class AudioApp(QMainWindow):
     def set_volume(self):
         volume = self.volume_slider.value() / 100.0  # Convert to a float between 0 and 1
         pygame.mixer.music.set_volume(volume)
-        self.volume_percentage.setText(f"{self.volume_slider.value()}%")
+        self.volume_percentage.setText(f"{int(volume * 100)}%")
 
     def get_section_times(self):
         try:
@@ -306,6 +495,7 @@ class AudioApp(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    apply_dark_mode(app)  # Apply the dark mode theme
     window = AudioApp()
     window.show()
     sys.exit(app.exec_())
