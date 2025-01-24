@@ -22,6 +22,9 @@ class AudioProcessor(QThread):
         self.sections = sections
 
     def run(self):
+        # Sort sections by start time to ensure they are processed in order
+        self.sections.sort(key=lambda x: x[0])
+
         combined = AudioSegment.empty()  # Start with an empty audio segment
         last_end_time = 0  # Keep track of the last section's end time
 
@@ -266,8 +269,18 @@ class AudioApp(QMainWindow):
         if selected_item:
             section_text = selected_item.text()
             section_idx = int(section_text.split(":")[0].split()[1]) - 1
+            
+            # Remove the section from the list
             self.sections.pop(section_idx)
+            
+            # Update the section list display
             self.section_list_widget.takeItem(self.section_list_widget.row(selected_item))
+            
+            # Re-number the sections in the list widget
+            for i in range(self.section_list_widget.count()):
+                item = self.section_list_widget.item(i)
+                item.setText(f"Section {i + 1}: {self.sections[i][0]}s to {self.sections[i][1]}s")
+            
             self.status_label.setText(f"Section {section_idx + 1} deleted.")
 
     def process_sections(self):
