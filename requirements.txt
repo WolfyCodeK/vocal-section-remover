@@ -1,2 +1,6 @@
+# python 3.9.13
 pydub
-spleeter
+pygame
+PyQt5
+demucs
+soundfile
