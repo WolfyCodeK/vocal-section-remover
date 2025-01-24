@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPu
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 # Ensure the output directory exists
-os.makedirs('output/temp_section', exist_ok=True)
+os.makedirs('output', exist_ok=True)
 
 class AudioProcessor(QThread):
     status_update = pyqtSignal(str)
@@ -26,19 +26,21 @@ class AudioProcessor(QThread):
             section = self.song[start_time * 1000:end_time * 1000]  # times in milliseconds
             section.export("temp_section.wav", format="wav")  # Export as WAV for better separation
 
-            self.status_update.emit(f"Running Spleeter for section {idx}...")
-            # Run Spleeter to separate vocals (using the 4stems model for better separation)
-            subprocess.run(["spleeter", "separate", "-p", "spleeter:4stems", "-o", "output", "temp_section.wav"])
+            self.status_update.emit(f"Running Demucs for section {idx}...")
+            # Run Demucs to separate vocals
+            subprocess.run(["demucs", "-n", "htdemucs", "--two-stems=vocals", "temp_section.wav"])
+
+            # Locate the instrumental file (accompaniment)
+            demucs_output_path = os.path.join("separated", "htdemucs", "temp_section")
+            accompaniment_path = os.path.join(demucs_output_path, "no_vocals.wav")
 
             self.status_update.emit(f"Loading instrumental version for section {idx}...")
-            # Ensure the directory exists and the file is created
-            other_path = os.path.join('output', 'temp_section', 'other.wav')
-            if not os.path.exists(other_path):
+            if not os.path.exists(accompaniment_path):
                 self.status_update.emit(f"Error: Instrumental file not found for section {idx}")
                 return
 
-            # Load instrumental version (other.wav contains the instrumental track)
-            instrumental = AudioSegment.from_file(other_path)
+            # Load instrumental version
+            instrumental = AudioSegment.from_file(accompaniment_path)
 
             self.status_update.emit(f"Adding song parts for section {idx}...")
             # Add the part before the section if necessary
@@ -47,12 +49,10 @@ class AudioProcessor(QThread):
                 combined += part_before_section
 
             # Add the section with vocals (original section)
-            section_with_vocals = section
-            combined += section_with_vocals
+            combined += section
 
             # Add the section without vocals (instrumental version)
-            section_without_vocals = instrumental
-            combined += section_without_vocals
+            combined += instrumental
 
             last_end_time = end_time  # Update the last end time to the current section's end time
 
@@ -68,8 +68,7 @@ class AudioProcessor(QThread):
         self.status_update.emit("Cleaning up temporary files...")
         # Clean up temporary files
         os.remove("temp_section.wav")
-        shutil.rmtree("output/temp_section", ignore_errors=True)
-        os.rmdir("output")  # Remove the output directory if it's empty
+        shutil.rmtree("separated", ignore_errors=True)
         self.status_update.emit("Processing complete! Saved as output_with_vocals_removed.mp3")
 
 class AudioApp(QMainWindow):
@@ -166,11 +165,19 @@ class AudioApp(QMainWindow):
     def delete_section(self):
         selected_item = self.section_list_widget.currentRow()
         if selected_item != -1:
+            # Remove the selected section
             self.sections.pop(selected_item)
             self.section_list_widget.takeItem(selected_item)
-            self.status_label.setText("Selected section deleted.")
+            
+            # Update the section list with corrected numbering
+            self.section_list_widget.clear()
+            for idx, (start_time, end_time) in enumerate(self.sections, start=1):
+                self.section_list_widget.addItem(f"Section {idx}: {start_time}s to {end_time}s")
+            
+            self.status_label.setText("Selected section deleted and list updated.")
         else:
             self.status_label.setText("Error: No section selected to delete.")
+
 
     def process_sections(self):
         if not self.song:
