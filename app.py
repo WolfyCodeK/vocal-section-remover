@@ -310,7 +310,14 @@ class AudioApp(QMainWindow):
 
         # Status label
         self.status_label = QLabel("Status: Waiting for song...")
-        self.status_label.setStyleSheet("color: blue;")
+        self.status_label.setStyleSheet("""
+            color: #00B4FF;  /* Bright blue color */
+            font-size: 14px;
+            font-weight: bold;
+            padding: 5px;
+            background-color: #363636;  /* Slightly lighter than background for contrast */
+            border-radius: 4px;
+        """)
         main_layout.addWidget(self.status_label)
 
         # Apply main layout
