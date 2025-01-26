@@ -4,3 +4,4 @@ pygame
 PyQt5
 demucs
 soundfile
+python-vlc
