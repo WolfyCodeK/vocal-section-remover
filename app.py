@@ -216,6 +216,10 @@ class AudioApp(QMainWindow):
         self.current_time = 0
         self.song_length = 0
         self.audio_processor = None
+        self.selecting_start = False
+        self.selecting_end = False
+        self.current_section_start = None
+        self.current_section_end = None
 
     def initUI(self):
         self.setWindowTitle("Audio Section Editor")
@@ -305,22 +309,37 @@ class AudioApp(QMainWindow):
         # Section controls
         section_group = QGroupBox("Sections")  
         section_layout = QVBoxLayout()
-        input_layout = QHBoxLayout()
-        self.start_time_input = QLineEdit()
-        self.start_time_input.setPlaceholderText("Start time (s)")
-        self.end_time_input = QLineEdit()
-        self.end_time_input.setPlaceholderText("End time (s)")
-        input_layout.addWidget(self.start_time_input)
-        input_layout.addWidget(self.end_time_input)
+        
+        # Timeline selection buttons
+        selection_buttons_layout = QHBoxLayout()
+        self.mark_start_button = QPushButton("Mark Start")
+        self.mark_start_button.clicked.connect(self.start_selection)
+        self.mark_end_button = QPushButton("Mark End")
+        self.mark_end_button.clicked.connect(self.end_selection)
+        selection_buttons_layout.addWidget(self.mark_start_button)
+        selection_buttons_layout.addWidget(self.mark_end_button)
+        section_layout.addLayout(selection_buttons_layout)
+        
+        # Current selection display
+        self.selection_label = QLabel("No section selected")
+        self.selection_label.setStyleSheet("color: #00B4FF;")
+        section_layout.addWidget(self.selection_label)
+        
+        # Add section button
         self.add_section_button = QPushButton("Add Section")
         self.add_section_button.clicked.connect(self.add_section)
-        section_layout.addLayout(input_layout)
+        self.add_section_button.setEnabled(False)  # Disabled until a valid selection is made
         section_layout.addWidget(self.add_section_button)
+        
+        # Section list
         self.section_list_widget = QListWidget()
         section_layout.addWidget(self.section_list_widget)
+        
+        # Delete section button
         self.delete_section_button = QPushButton("Delete Selected Section")
         self.delete_section_button.clicked.connect(self.delete_section)
         section_layout.addWidget(self.delete_section_button)
+        
         section_group.setLayout(section_layout)
         main_layout.addWidget(section_group)
 
@@ -356,6 +375,11 @@ class AudioApp(QMainWindow):
                 font-size: 14px;
                 padding: 8px;
                 border-radius: 5px;
+                outline: none;  /* Remove outline */
+            }
+            QPushButton:focus {
+                outline: none;  /* Remove focus outline */
+                border: 1px solid #555555;  /* Keep consistent border */
             }
             QPushButton:hover {
                 background-color: #E0E0E0;
@@ -449,6 +473,7 @@ class AudioApp(QMainWindow):
             
         # Update the current time when the slider is moved
         self.current_time = self.timeline_slider.value()
+        
         if self.is_playing:
             pygame.mixer.music.play(start=self.current_time)
 
@@ -462,25 +487,74 @@ class AudioApp(QMainWindow):
         pygame.mixer.music.set_volume(volume)
         self.volume_percentage.setText(f"{int(volume * 100)}%")
 
-    def get_section_times(self):
-        try:
-            start_time = int(self.start_time_input.text())
-            end_time = int(self.end_time_input.text())
-            if end_time <= start_time:
-                self.status_label.setText("Error: End time must be after start time!")
-                return None, None
-            return start_time, end_time
-        except ValueError:
-            self.status_label.setText("Error: Please enter valid integers for start and end times!")
-            return None, None
+    def start_selection(self):
+        if not self.song:
+            self.status_label.setText("Error: No song loaded!")
+            return
+        
+        # Use current timeline position immediately
+        self.current_section_start = self.current_time
+        self.mark_start_button.setStyleSheet("background-color: #FF4444;")
+        self.mark_end_button.setStyleSheet("")
+        self.update_selection_label()
+        self.status_label.setText("Start point marked. Click 'Mark End' to set end point")
+        
+    def end_selection(self):
+        if not self.song:
+            self.status_label.setText("Error: No song loaded!")
+            return
+        
+        if self.current_section_start is None:
+            self.status_label.setText("Error: Set start point first!")
+            return
+        
+        # Use current timeline position immediately
+        if self.current_time > self.current_section_start:
+            self.current_section_end = self.current_time
+            self.mark_end_button.setStyleSheet("background-color: #FF4444;")
+            self.mark_start_button.setStyleSheet("")
+            self.update_selection_label()
+            self.add_section_button.setEnabled(True)
+            self.status_label.setText("End point marked. Click 'Add Section' to add this section")
+        else:
+            self.status_label.setText("Error: End point must be after start point!")
+
+    def update_selection_label(self):
+        if self.current_section_start is not None:
+            start_min, start_sec = divmod(int(self.current_section_start), 60)
+            if self.current_section_end is not None:
+                end_min, end_sec = divmod(int(self.current_section_end), 60)
+                self.selection_label.setText(
+                    f"Selected: {start_min:02}:{start_sec:02} to {end_min:02}:{end_sec:02}"
+                )
+            else:
+                self.selection_label.setText(
+                    f"Start: {start_min:02}:{start_sec:02} - Click 'Mark End' to set end point"
+                )
+        else:
+            self.selection_label.setText("No section selected")
 
     def add_section(self):
-        start_time, end_time = self.get_section_times()
-        if start_time is None or end_time is None:
+        if self.current_section_start is None or self.current_section_end is None:
+            self.status_label.setText("Error: Please select both start and end points!")
             return
-        self.sections.append((start_time, end_time))
-        self.section_list_widget.addItem(f"Section {len(self.sections)}: {start_time}s to {end_time}s")
-        self.status_label.setText(f"Section {len(self.sections)} added: {start_time}s to {end_time}s")
+            
+        self.sections.append((self.current_section_start, self.current_section_end))
+        start_min, start_sec = divmod(int(self.current_section_start), 60)
+        end_min, end_sec = divmod(int(self.current_section_end), 60)
+        self.section_list_widget.addItem(
+            f"Section {len(self.sections)}: {start_min:02}:{start_sec:02} to {end_min:02}:{end_sec:02}"
+        )
+        
+        # Reset selection
+        self.current_section_start = None
+        self.current_section_end = None
+        self.add_section_button.setEnabled(False)
+        # Reset button styles
+        self.mark_start_button.setStyleSheet("")
+        self.mark_end_button.setStyleSheet("")
+        self.update_selection_label()
+        self.status_label.setText(f"Section {len(self.sections)} added")
 
     def delete_section(self):
         selected_item = self.section_list_widget.currentItem()
@@ -494,10 +568,14 @@ class AudioApp(QMainWindow):
             # Update the section list display
             self.section_list_widget.takeItem(self.section_list_widget.row(selected_item))
             
-            # Re-number the sections in the list widget
+            # Re-number the sections in the list widget with MM:SS format
             for i in range(self.section_list_widget.count()):
                 item = self.section_list_widget.item(i)
-                item.setText(f"Section {i + 1}: {self.sections[i][0]}s to {self.sections[i][1]}s")
+                start_min, start_sec = divmod(int(self.sections[i][0]), 60)
+                end_min, end_sec = divmod(int(self.sections[i][1]), 60)
+                item.setText(
+                    f"Section {i + 1}: {start_min:02}:{start_sec:02} to {end_min:02}:{end_sec:02}"
+                )
             
             self.status_label.setText(f"Section {section_idx + 1} deleted.")
 
