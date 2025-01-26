@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
     QFileDialog
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt5.QtGui import QIcon
 
 # Initialize Pygame mixer
 pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
@@ -182,6 +183,8 @@ class AudioProcessor(QThread):
 class AudioApp(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.setWindowIcon(QIcon('assets/app_icon.ico'))
+        
         # Initialize pygame mixer with better audio quality
         pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
         pygame.mixer.music.set_volume(1.0)  # Set initial volume to maximum
@@ -502,6 +505,7 @@ class AudioApp(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon('assets/app_icon.ico'))
     apply_dark_mode(app)  # Apply the dark mode theme
     window = AudioApp()
     window.show()

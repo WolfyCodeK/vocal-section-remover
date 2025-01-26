@@ -1,7 +1,28 @@
+# Build directories
+build/
+dist/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+.env/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Temporary files
+*.wav
+*.mp3
+output/
+separated/
+
 pretrained_models
-env
-venv
 myenv
 *.mp3
-output
-separated
+assets
