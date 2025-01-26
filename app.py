@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QIcon
+import resources
 
 # Initialize Pygame mixer
 pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
@@ -136,8 +137,22 @@ class AudioProcessor(QThread):
             section.export("temp_section.wav", format="wav")  # Export as WAV for better separation
 
             self.status_update.emit(f"Running Demucs for section {idx}...")
-            # Run Demucs to separate vocals
-            subprocess.run(["demucs", "-n", "htdemucs", "--two-stems=vocals", "temp_section.wav"])
+            # Run Demucs with completely hidden console
+            startupinfo = None
+            if os.name == 'nt':  # Windows
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW | subprocess.CREATE_NO_WINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+
+            # Create a complete subprocess configuration
+            subprocess.run(
+                ["demucs", "-n", "htdemucs", "--two-stems=vocals", "temp_section.wav"],
+                startupinfo=startupinfo,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+                shell=False
+            )
 
             self.status_update.emit(f"Loading instrumental version for section {idx}...")
             # Ensure the directory exists and the file is created
@@ -183,7 +198,11 @@ class AudioProcessor(QThread):
 class AudioApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowIcon(QIcon('assets/app_icon.ico'))
+        
+        # Set window icon
+        icon_path = resources.get_icon_path()
+        if icon_path:
+            self.setWindowIcon(QIcon(icon_path))
         
         # Initialize pygame mixer with better audio quality
         pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
@@ -505,8 +524,13 @@ class AudioApp(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon('assets/app_icon.ico'))
-    apply_dark_mode(app)  # Apply the dark mode theme
+    
+    # Set application icon
+    icon_path = resources.get_icon_path()
+    if icon_path:
+        app.setWindowIcon(QIcon(icon_path))
+    
+    apply_dark_mode(app)
     window = AudioApp()
     window.show()
     sys.exit(app.exec_())
