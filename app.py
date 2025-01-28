@@ -1,10 +1,9 @@
 import os
-import vlc
 import sys
 from pydub import AudioSegment
 import subprocess
 import shutil
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
     QPushButton,
@@ -17,30 +16,13 @@ from PyQt5.QtWidgets import (
     QWidget,
     QGroupBox,
     QFileDialog,
-    QShortcut
+    QStyle
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QTime
-from PyQt5.QtGui import QIcon, QKeySequence
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QTime, QUrl
+from PyQt6.QtGui import QIcon, QKeySequence, QShortcut
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 import resources
 import datetime
-
-# Add VLC to system path
-if sys.platform.startswith('win32'):
-    # Try common VLC installation paths
-    vlc_paths = [
-        os.path.join(os.environ.get('PROGRAMFILES'), 'VideoLAN', 'VLC'),
-        os.path.join(os.environ.get('PROGRAMFILES(X86)'), 'VideoLAN', 'VLC'),
-        r'C:\Program Files\VideoLAN\VLC',
-        r'C:\Program Files (x86)\VideoLAN\VLC'
-    ]
-    
-    for vlc_path in vlc_paths:
-        if os.path.exists(vlc_path):
-            if vlc_path not in os.environ['PATH']:
-                os.environ['PATH'] = vlc_path + ';' + os.environ['PATH']
-            break
-    else:
-        print("Warning: VLC installation not found. Please install VLC media player.")
 
 # Ensure the output directory exists
 os.makedirs('output/temp_section', exist_ok=True)
@@ -129,6 +111,11 @@ def apply_dark_mode(app):
         width: 3px;
     }
     """
+    # Update QSlider styles for PyQt6
+    dark_stylesheet = dark_stylesheet.replace(
+        "QSlider::handle:horizontal {",
+        "QSlider::handle:horizontal {"
+    )
     app.setStyleSheet(dark_stylesheet)
 
 def format_time(seconds):
@@ -245,10 +232,17 @@ class AudioApp(QMainWindow):
         if icon_path:
             self.setWindowIcon(QIcon(icon_path))
         
-        # Initialize VLC instance and player with logging disabled
-        self.instance = vlc.Instance('--quiet')  # Add quiet flag
-        self.player = self.instance.media_player_new()
-        self.media = None
+        # Initialize QMediaPlayer instead of VLC
+        self.player = QMediaPlayer()
+        self.audio_output = QAudioOutput()
+        self.player.setAudioOutput(self.audio_output)
+        
+        # Set initial volume (50%)
+        self.audio_output.setVolume(0.5)  # QAudioOutput uses 0-1 range
+        
+        # Connect position and duration signals
+        self.player.positionChanged.connect(self.on_position_changed)
+        self.player.durationChanged.connect(self.on_duration_changed)
         
         self.initUI()
         self.song = None
@@ -270,7 +264,7 @@ class AudioApp(QMainWindow):
         
         # Remove focus from all buttons
         for button in self.findChildren(QPushButton):
-            button.setFocusPolicy(Qt.NoFocus)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         
         # Initialize keyboard shortcuts
         self.setup_shortcuts()
@@ -315,10 +309,10 @@ class AudioApp(QMainWindow):
         song_group = QGroupBox("Load Song")
         song_layout = QVBoxLayout()
         self.load_button = QPushButton(" Import File")
-        self.load_button.setIcon(self.style().standardIcon(QPushButton().style().SP_DirOpenIcon))
+        self.load_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         self.load_button.clicked.connect(self.load_song)
         self.load_button.setMinimumWidth(200)  # Make button wider
-        song_layout.addWidget(self.load_button, alignment=Qt.AlignCenter)  # Center the button
+        song_layout.addWidget(self.load_button, alignment=Qt.AlignmentFlag.AlignCenter)  # Center the button
         song_group.setLayout(song_layout)
         top_row.addWidget(song_group, 1)  # Add stretch factor of 1
         
@@ -328,7 +322,7 @@ class AudioApp(QMainWindow):
         
         # Play button
         self.play_button = QPushButton("Play")
-        self.play_button.setIcon(self.style().standardIcon(QPushButton().style().SP_MediaPlay))
+        self.play_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.play_button.clicked.connect(self.toggle_play)
         self.play_button.setFixedWidth(100)
         playback_layout.addWidget(self.play_button)
@@ -340,12 +334,12 @@ class AudioApp(QMainWindow):
         volume_label = QLabel("🔊")
         volume_layout.addWidget(volume_label)
         
-        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setFixedWidth(100)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(50)
         self.volume_slider.valueChanged.connect(self.set_volume)
-        self.volume_slider.setTickPosition(QSlider.TicksBelow)
+        self.volume_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.volume_slider.setTickInterval(25)
         volume_layout.addWidget(self.volume_slider)
         
@@ -372,7 +366,7 @@ class AudioApp(QMainWindow):
         # Add song name label
         self.song_label = QLabel("No song loaded")
         self.song_label.setStyleSheet("color: gray; font-style: italic;")
-        self.song_label.setAlignment(Qt.AlignCenter)  # Center the text
+        self.song_label.setAlignment(Qt.AlignmentFlag.AlignCenter)  # Center the text
         timeline_layout.addWidget(self.song_label)
         
         # Add time display label
@@ -380,7 +374,7 @@ class AudioApp(QMainWindow):
         timeline_layout.addWidget(self.time_display)
         
         # Timeline slider
-        self.timeline_slider = QSlider(Qt.Horizontal)
+        self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
         self.timeline_slider.setRange(0, 100)
         self.timeline_slider.valueChanged.connect(self.on_slider_change)
         timeline_layout.addWidget(self.timeline_slider)
@@ -404,7 +398,7 @@ class AudioApp(QMainWindow):
         # Update label to show 1s increment
         time_increment_label = QLabel("1s")
         time_increment_label.setStyleSheet("font-size: 10px; color: #888888;")
-        time_increment_label.setAlignment(Qt.AlignCenter)
+        time_increment_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         forward_01_button = QPushButton("→")
         forward_01_button.clicked.connect(lambda: self.adjust_time(1.0))
@@ -484,20 +478,9 @@ class AudioApp(QMainWindow):
         self.process_button.clicked.connect(self.process_sections)
         main_layout.addWidget(self.process_button)
 
-        # Status label
-        self.status_label = QLabel("Status: Waiting for song...")
-        self.status_label.setStyleSheet("""
-            color: #00B4FF;  /* Bright blue color */
-            font-size: 14px;
-            font-weight: bold;
-            padding: 5px;
-            background-color: #363636;  /* Slightly lighter than background for contrast */
-            border-radius: 4px;
-            min-height: 30px;  /* Fixed minimum height */
-            max-height: 30px;  /* Fixed maximum height */
-        """)
-        self.status_label.setWordWrap(True)  # Enable text wrapping
-        self.status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # Align text left and vertically center
+        # Status label with default style for info messages
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("color: #3498db;")  # Default blue color
         main_layout.addWidget(self.status_label)
 
         # Apply main layout
@@ -568,114 +551,78 @@ class AudioApp(QMainWindow):
         file, _ = QFileDialog.getOpenFileName(self, "Load Song", "", "Audio Files (*.mp3 *.wav)")
         if file:
             try:
-                self.status_label.setText("Creating working copy...")
+                self.update_status("Loading song...")  # Use update_status instead of direct setText
                 
-                # Create temp directory if it doesn't exist
-                os.makedirs('temp', exist_ok=True)
+                # Load with pydub (for processing)
+                self.song = AudioSegment.from_file(file)
+                self.song_path = file
                 
-                # Create a temporary copy with original extension
-                file_ext = os.path.splitext(file)[1]
-                self.temp_file = os.path.join('temp', f'working_copy{file_ext}')
-                shutil.copy2(file, self.temp_file)
+                # Load with QMediaPlayer (for playback)
+                self.player.setSource(QUrl.fromLocalFile(file))
                 
-                # Load the temp file using VLC first (for playback)
-                self.media = self.instance.media_new(self.temp_file)
-                self.player.set_media(self.media)
-                
-                # Then load with pydub (for processing)
-                try:
-                    self.song = AudioSegment.from_file(self.temp_file)
-                except Exception as e:
-                    # If mp3 fails, try forcing the format
-                    if file.lower().endswith('.mp3'):
-                        self.song = AudioSegment.from_file(self.temp_file, format="mp3", codec="mp3")
-                    else:
-                        raise e
-                
-                self.song_path = file  # Keep original path for reference
-                # Show filename with extension
+                # Show filename
                 filename = os.path.basename(self.song_path)
                 self.song_label.setText(filename)
                 self.song_label.setStyleSheet("color: #FFFFFF; font-style: normal;")
-                self.status_label.setText("Loading song, please wait...")
                 
-                # Disable controls during loading
-                self.timeline_slider.setEnabled(False)
-                self.play_button.setEnabled(False)
-
-                # Calculate the song length using AudioSegment
-                self.song_length = len(self.song) / 1000  # Convert milliseconds to seconds
-                self.timeline_slider.setRange(0, int(self.song_length))  # Use whole seconds
+                # Calculate song length from pydub
+                self.song_length = len(self.song) / 1000  # Convert to seconds
+                self.timeline_slider.setRange(0, int(self.song_length))
+                
+                # Reset current time and update display
                 self.current_time = 0
+                self.update_time_display(0)  # Update the time display immediately
                 
-                # Add artificial delay for proper initialization
-                QTimer.singleShot(500, self._start_initialization)
+                self.update_status("Song loaded successfully!")
                 
             except Exception as e:
-                self.status_label.setText(f"Error loading song: {str(e)}")
+                self.update_status(f"Error loading song: {str(e)}")
                 self.song = None
                 self.song_path = None
-                if hasattr(self, 'temp_file') and os.path.exists(self.temp_file):
-                    try:
-                        os.remove(self.temp_file)
-                    except:
-                        pass
-
-    def _start_initialization(self):
-        # Play and immediately pause to initialize the media
-        self.player.play()
-        QTimer.singleShot(200, self._pause_and_initialize)
-
-    def _pause_and_initialize(self):
-        self.player.pause()
-        # Get media length and ensure it's loaded
-        length = self.player.get_length()
-        if length > 0:
-            self.player.set_time(0)
-            self.current_time = 0
-            self.timeline_slider.setValue(0)
-            self.update_time_display(0)
-            self.is_playing = False
-            self.play_button.setText("Play")
-            
-            # Set and sync initial volume
-            initial_volume = self.volume_slider.value()
-            self.player.audio_set_volume(initial_volume)
-            self.volume_percentage.setText(f"{initial_volume}%")
-            
-            # Re-enable controls
-            self.timeline_slider.setEnabled(True)
-            self.play_button.setEnabled(True)
-            self.status_label.setText("Song loaded successfully!")
-        else:
-            # If media isn't loaded yet, try again
-            QTimer.singleShot(100, self._pause_and_initialize)
 
     def toggle_play(self):
         if self.song is None:
             self.status_label.setText("Error: No song loaded!")
             return
 
-        if self.is_playing:
+        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
             self.play_button.setText("Play")
-            self.update_timer.stop()
-            # Ensure current time is synchronized when pausing
-            current_ms = self.player.get_time()
-            if current_ms >= 0:
-                self.current_time = current_ms / 1000.0
-                self.timeline_slider.setValue(int(self.current_time))
-                self.update_time_display(self.current_time)
+            self.is_playing = False
         else:
             self.player.play()
             self.play_button.setText("Pause")
-            self.update_timer.start()
-        self.is_playing = not self.is_playing
+            self.is_playing = True
+
+    def on_position_changed(self, position):
+        # Convert position from milliseconds to seconds
+        self.current_time = position / 1000
+        self.timeline_slider.blockSignals(True)
+        self.timeline_slider.setValue(int(self.current_time))
+        self.timeline_slider.blockSignals(False)
+        self.update_time_display(self.current_time)
+
+    def on_duration_changed(self, duration):
+        # Convert duration from milliseconds to seconds
+        self.song_length = duration / 1000
+        self.timeline_slider.setRange(0, int(self.song_length))
+
+    def on_slider_change(self):
+        if not self.song:
+            return
+        
+        position = self.timeline_slider.value() * 1000  # Convert to milliseconds
+        self.player.setPosition(position)
+
+    def set_volume(self):
+        volume = self.volume_slider.value() / 100.0  # Convert to 0-1 range
+        self.audio_output.setVolume(volume)
+        self.volume_percentage.setText(f"{int(volume * 100)}%")
 
     def update_time(self):
-        if self.is_playing and self.player.is_playing():
+        if self.is_playing and self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             # Get current time in milliseconds
-            current_ms = self.player.get_time()
+            current_ms = self.player.position()
             if current_ms >= 0:
                 self.current_time = current_ms / 1000.0
                 # Update slider position without triggering valueChanged signal
@@ -685,7 +632,7 @@ class AudioApp(QMainWindow):
                 self.update_time_display(self.current_time)
                 
                 # Check if we've reached the end of the song
-                if current_ms >= self.player.get_length():
+                if current_ms >= self.player.duration():
                     self.stop_audio()
                     return
         else:
@@ -712,56 +659,118 @@ class AudioApp(QMainWindow):
             f"{minutes:02}:{seconds:02} / {total_minutes:02}:{total_seconds:02}"
         )
 
-    def on_slider_change(self):
-        if not self.song:  # Check if song is loaded
+    def adjust_time(self, delta):
+        if not self.song:
             return
+            
+        # Rate limiting for seeking operations
+        current_time = QTime.currentTime().msecsSinceStartOfDay()
+        if current_time - self.last_seek_time < self.seek_cooldown:
+            return
+        self.last_seek_time = current_time
+            
+        # Calculate new time
+        new_time = round(self.current_time + delta, 1)
+        new_time = max(0, min(new_time, self.song_length))
         
-        # Store playback state and pause if playing
-        if self.is_playing:
-            self.was_playing = True
+        # Store current playing state but don't resume after
+        was_playing = self.is_playing
+        if was_playing:
             self.is_playing = False
             self.play_button.setText("Play")
             self.update_timer.stop()
             self.player.pause()
         
-        # Store the desired position
-        self.pending_seek_position = self.timeline_slider.value()
-        
-        # Reset and start the debounce timer
-        self.seek_timer.stop()
-        self.seek_timer.start(50)  # 50ms debounce
+        # Set the new position directly without using the debounce mechanism
+        self.current_time = new_time
+        self.timeline_slider.setValue(int(new_time))
+        if self.player.duration() > 0:
+            # Just set position in milliseconds directly
+            self.player.setPosition(int(new_time * 1000))
+        self.update_time_display(new_time)
 
-    def perform_seek(self):
-        if self.pending_seek_position is None:
+    def setup_shortcuts(self):
+        # Space bar for play/pause
+        self.play_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
+        self.play_shortcut.activated.connect(self.toggle_play)
+        
+        # Left/Right arrow keys for time adjustment (1 second)
+        self.left_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Left), self)
+        self.left_shortcut.activated.connect(lambda: self.adjust_time(-1.0))
+        
+        self.right_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Right), self)
+        self.right_shortcut.activated.connect(lambda: self.adjust_time(1.0))
+        
+        # Up/Down arrow keys for volume control
+        self.up_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Up), self)
+        self.up_shortcut.activated.connect(lambda: self.adjust_volume(5))  # Increase by 5%
+        
+        self.down_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Down), self)
+        self.down_shortcut.activated.connect(lambda: self.adjust_volume(-5))  # Decrease by 5%
+        
+        # Enter key for section marking
+        self.enter_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Return), self)
+        self.enter_shortcut.activated.connect(self.handle_enter)
+
+    def adjust_volume(self, delta):
+        new_volume = min(100, max(0, self.volume_slider.value() + delta))
+        self.volume_slider.setValue(new_volume)
+
+    def handle_enter(self):
+        if not self.song:
+            self.status_label.setText("Error: No song loaded!")
             return
         
-        # Get the final position we want to seek to
-        new_time = self.pending_seek_position
-        self.current_time = new_time
+        # If no start point is set, set start point
+        if self.current_section_start is None:
+            self.start_selection()
+            # Highlight mark end button
+            self.mark_start_button.setStyleSheet(self.default_color)
+            self.mark_end_button.setStyleSheet(self.highlight_color)
+            self.add_section_button.setStyleSheet(self.default_color)
         
-        if self.player.get_length() > 0:
-            # Just seek since we're already paused
-            position = new_time / self.song_length
-            self.player.set_position(float(position))
-            
-            # Resume playback if it was playing before
-            if self.was_playing:
-                QTimer.singleShot(100, self.resume_playback)
-            
-        self.update_time_display(self.current_time)
-        self.pending_seek_position = None
+        # If start is set but no end point, set end point
+        elif self.current_section_end is None:
+            self.end_selection()
+            if self.add_section_button.isEnabled():  # Only if end point was valid
+                self.mark_end_button.setStyleSheet(self.default_color)
+                self.add_section_button.setStyleSheet(self.highlight_color)
+        
+        # If both points are set, add the section
+        elif self.add_section_button.isEnabled():
+            self.add_section()
+            # Reset to start state - highlight mark start
+            self.mark_start_button.setStyleSheet(self.highlight_color)
+            self.mark_end_button.setStyleSheet(self.default_color)
+            self.add_section_button.setStyleSheet(self.default_color)
 
-    def resume_playback(self):
-        self.player.play()
-        self.is_playing = True
-        self.was_playing = False
-        self.play_button.setText("Pause")
-        self.update_timer.start()
+    def stop_audio(self):
+        self.player.pause()
+        self.is_playing = False
+        self.play_button.setText("Play")
+        self.update_timer.stop()
+        # Reset position to start
+        self.current_time = 0
+        self.timeline_slider.setValue(0)
+        self.update_time_display(0)
 
-    def set_volume(self):
-        volume = self.volume_slider.value()
-        self.player.audio_set_volume(volume)
-        self.volume_percentage.setText(f"{volume}%")
+    def cancel_section(self):
+        # Reset selection
+        self.current_section_start = None
+        self.current_section_end = None
+        
+        # Reset button states
+        self.add_section_button.setEnabled(False)
+        self.cancel_section_button.setEnabled(False)
+        
+        # Reset button styles and highlight mark start
+        self.mark_start_button.setStyleSheet(self.highlight_color)
+        self.mark_end_button.setStyleSheet(self.default_color)
+        self.add_section_button.setStyleSheet(self.default_color)
+        
+        # Update the selection label
+        self.update_selection_label()
+        self.status_label.setText("Section marking cancelled")
 
     def start_selection(self):
         if not self.song:
@@ -895,6 +904,10 @@ class AudioApp(QMainWindow):
         self.audio_processor.start()
 
     def update_status(self, message):
+        if message.lower().startswith("error"):
+            self.status_label.setStyleSheet("color: #e74c3c;")  # Red for errors
+        else:
+            self.status_label.setStyleSheet("color: #3498db;")  # Blue for info
         self.status_label.setText(message)
 
     def closeEvent(self, event):
@@ -905,7 +918,7 @@ class AudioApp(QMainWindow):
         if hasattr(self, 'is_playing'):
             self.is_playing = False
         
-        # Release VLC resources in a safe order
+        # Release QMediaPlayer resources in a safe order
         if hasattr(self, 'player'):
             if self.player:
                 self.player.stop()
@@ -919,14 +932,13 @@ class AudioApp(QMainWindow):
         event.accept()
 
     def _finish_cleanup(self):
-        # Release VLC resources
+        # Release QMediaPlayer resources
         if hasattr(self, 'player') and self.player:
-            self.player.release()
+            self.player.stop()  # Just stop, no need to release
             self.player = None
         
-        if hasattr(self, 'instance') and self.instance:
-            self.instance.release()
-            self.instance = None
+        if hasattr(self, 'audio_output') and self.audio_output:
+            self.audio_output = None  # No need to release, just remove reference
         
         # Stop audio processor if running
         if self.audio_processor and self.audio_processor.isRunning():
@@ -948,118 +960,32 @@ class AudioApp(QMainWindow):
         # Now we can safely close the application
         QApplication.quit()
 
-    def adjust_time(self, delta):
-        if not self.song:
+    def perform_seek(self):
+        if self.pending_seek_position is None:
             return
-            
-        # Rate limiting for seeking operations
-        current_time = QTime.currentTime().msecsSinceStartOfDay()
-        if current_time - self.last_seek_time < self.seek_cooldown:
-            return
-        self.last_seek_time = current_time
-            
-        # Calculate new time
-        new_time = round(self.current_time + delta, 1)
-        new_time = max(0, min(new_time, self.song_length))
         
-        # Store current playing state but don't resume after
-        was_playing = self.is_playing
-        if was_playing:
-            self.is_playing = False
-            self.play_button.setText("Play")
-            self.update_timer.stop()
-            self.player.pause()
-        
-        # Set the new position directly without using the debounce mechanism
+        # Get the final position we want to seek to
+        new_time = self.pending_seek_position
         self.current_time = new_time
-        self.timeline_slider.setValue(int(new_time))
-        if self.player.get_length() > 0:
-            position = new_time / self.song_length
-            self.player.set_position(float(position))
-        self.update_time_display(new_time)
+        
+        if self.player.duration() > 0:
+            # Convert to milliseconds for QMediaPlayer
+            position_ms = int(new_time * 1000)
+            self.player.setPosition(position_ms)
+            
+            # Resume playback if it was playing before
+            if self.was_playing:
+                QTimer.singleShot(100, self.resume_playback)
+            
+        self.update_time_display(self.current_time)
+        self.pending_seek_position = None
 
-    def setup_shortcuts(self):
-        # Space bar for play/pause
-        self.play_shortcut = QShortcut(QKeySequence(Qt.Key_Space), self)
-        self.play_shortcut.activated.connect(self.toggle_play)
-        
-        # Left/Right arrow keys for time adjustment (1 second)
-        self.left_shortcut = QShortcut(QKeySequence(Qt.Key_Left), self)
-        self.left_shortcut.activated.connect(lambda: self.adjust_time(-1.0))
-        
-        self.right_shortcut = QShortcut(QKeySequence(Qt.Key_Right), self)
-        self.right_shortcut.activated.connect(lambda: self.adjust_time(1.0))
-        
-        # Up/Down arrow keys for volume control
-        self.up_shortcut = QShortcut(QKeySequence(Qt.Key_Up), self)
-        self.up_shortcut.activated.connect(lambda: self.adjust_volume(5))  # Increase by 5%
-        
-        self.down_shortcut = QShortcut(QKeySequence(Qt.Key_Down), self)
-        self.down_shortcut.activated.connect(lambda: self.adjust_volume(-5))  # Decrease by 5%
-        
-        # Enter key for section marking
-        self.enter_shortcut = QShortcut(QKeySequence(Qt.Key_Return), self)
-        self.enter_shortcut.activated.connect(self.handle_enter)
-
-    def adjust_volume(self, delta):
-        new_volume = min(100, max(0, self.volume_slider.value() + delta))
-        self.volume_slider.setValue(new_volume)
-
-    def handle_enter(self):
-        if not self.song:
-            self.status_label.setText("Error: No song loaded!")
-            return
-        
-        # If no start point is set, set start point
-        if self.current_section_start is None:
-            self.start_selection()
-            # Highlight mark end button
-            self.mark_start_button.setStyleSheet(self.default_color)
-            self.mark_end_button.setStyleSheet(self.highlight_color)
-            self.add_section_button.setStyleSheet(self.default_color)
-        
-        # If start is set but no end point, set end point
-        elif self.current_section_end is None:
-            self.end_selection()
-            if self.add_section_button.isEnabled():  # Only if end point was valid
-                self.mark_end_button.setStyleSheet(self.default_color)
-                self.add_section_button.setStyleSheet(self.highlight_color)
-        
-        # If both points are set, add the section
-        elif self.add_section_button.isEnabled():
-            self.add_section()
-            # Reset to start state - highlight mark start
-            self.mark_start_button.setStyleSheet(self.highlight_color)
-            self.mark_end_button.setStyleSheet(self.default_color)
-            self.add_section_button.setStyleSheet(self.default_color)
-
-    def stop_audio(self):
-        self.player.pause()
-        self.is_playing = False
-        self.play_button.setText("Play")
-        self.update_timer.stop()
-        # Reset position to start
-        self.current_time = 0
-        self.timeline_slider.setValue(0)
-        self.update_time_display(0)
-
-    def cancel_section(self):
-        # Reset selection
-        self.current_section_start = None
-        self.current_section_end = None
-        
-        # Reset button states
-        self.add_section_button.setEnabled(False)
-        self.cancel_section_button.setEnabled(False)
-        
-        # Reset button styles and highlight mark start
-        self.mark_start_button.setStyleSheet(self.highlight_color)
-        self.mark_end_button.setStyleSheet(self.default_color)
-        self.add_section_button.setStyleSheet(self.default_color)
-        
-        # Update the selection label
-        self.update_selection_label()
-        self.status_label.setText("Section marking cancelled")
+    def resume_playback(self):
+        self.player.play()
+        self.is_playing = True
+        self.was_playing = False
+        self.play_button.setText("Pause")
+        self.update_timer.start()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
@@ -1072,4 +998,4 @@ if __name__ == "__main__":
     apply_dark_mode(app)
     window = AudioApp()
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())  # Remove underscore from exec_ in PyQt6

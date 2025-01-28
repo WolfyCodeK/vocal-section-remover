@@ -1,75 +1,60 @@
-# Audio Section Editor
+# Voice Section Remover
 
-A desktop application for editing audio files by marking sections and removing vocals from those sections. The app allows you to load an audio file, mark specific sections, and process those sections to remove vocals while keeping the rest of the song intact.
+A desktop application that lets you remove vocals from specific sections of songs while keeping the instrumental background.
 
-## Features
+## What It Does
 
-- Load and play MP3/WAV audio files
-- Mark specific sections of the audio for vocal removal
-- Preview sections before processing
-- Process multiple sections in one go
-- Keyboard shortcuts for quick control
-- Dark mode interface
-- Volume control
-- Precise timeline navigation
+- Load MP3 or WAV audio files
+- Play and navigate through songs
+- Mark sections where you want vocals removed
+- Process multiple sections at once
 
-## Usage
+## How to Use
 
-1. Click "Import File" to load an audio file (MP3 or WAV)
-2. Use the playback controls to navigate the audio:
-   - Play/Pause button
-   - Timeline slider
-   - 1-second forward/backward buttons
-   - Volume slider
+1. **Open a Song**
+   - Click "Import File" to load your audio file
+   - The song name will appear and the timeline will update
 
-3. Mark sections for vocal removal:
-   - Click "Mark Start" or press Enter at the desired start point
-   - Click "Mark End" or press Enter again at the desired end point
-   - Click "Add Section" or press Enter a third time to add the section
-   - Use "Cancel" to abort the current section marking
+2. **Navigate the Song**
+   - Click Play/Pause or press Space to start/stop playback
+   - Use the timeline slider to jump to any part
+   - Use the 1-second buttons or arrow keys for precise navigation
+   - Adjust volume with the slider or Up/Down arrows
 
-4. Manage sections:
-   - View all marked sections in the list
-   - Select and delete unwanted sections
-   - Add multiple sections as needed
+3. **Mark Sections**
+   - Navigate to where you want to start removing vocals
+   - Click "Mark Start" or press Enter
+   - Navigate to where you want to stop removing vocals
+   - Click "Mark End" or press Enter
+   - Click "Add Section" or press Enter to confirm
+   - Repeat for multiple sections if needed
+   - Use "Cancel" if you make a mistake
 
-5. Click "Process Sections" to remove vocals from all marked sections
-   - The app will create a new file with vocals removed from marked sections
-   - Output will be saved in a timestamped folder with the original filename
+4. **Process the Song**
+   - Click "Process Sections" when you're ready
+   - Wait for processing to complete
+   - Find your edited song in the "output" folder
+   - Each processed file is in its own timestamped folder
 
-## Keyboard Shortcuts
+## Keyboard Controls
 
 - **Space**: Play/Pause
-- **Left Arrow**: Move back 1 second
-- **Right Arrow**: Move forward 1 second
-- **Up Arrow**: Increase volume by 5%
-- **Down Arrow**: Decrease volume by 5%
-- **Enter**: Mark section (Start → End → Add)
+- **Left Arrow**: Go back 1 second
+- **Right Arrow**: Go forward 1 second
+- **Up Arrow**: Volume up
+- **Down Arrow**: Volume down
+- **Enter**: Mark sections (Start → End → Add)
 
-## Output
+## Finding Your Processed Files
 
-The processed file will be saved in an output folder named after the original file with a timestamp:
-- `output/songname_YYYYMMDD_HHMMSS/output.mp3`
-- A text file with section information is included in the output folder
+After processing, your new audio file will be in:
+- A folder named `output`
+- In a subfolder with your song's name and the current date/time
+- Along with a text file listing the sections that were processed
 
-## Requirements
+## Important Notes
 
-- Windows operating system
-- VLC media player installed
-- Python dependencies (if running from source)
-
-## Notes
-
-- The original audio file is never modified
-- A temporary working copy is created during processing
-- The app automatically cleans up temporary files
-
-## Installation
-
-1. Install Demucs:
-2. Download and run the Audio Section Editor executable from the releases page.
-
-## Known Issues
-
-- First time startup might be slow due to Demucs model loading
-- Processing large files requires significant RAM and CPU power
+- Your original audio file is never changed
+- Processing might take a few minutes depending on file size
+- First startup may be slower while the app loads
+- Keep the app open until processing is complete
