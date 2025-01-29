@@ -1,5 +1,34 @@
 import os
 import sys
+import shutil
+import subprocess
+
+# Set up base paths
+if getattr(sys, 'frozen', False):
+    # If running as compiled executable
+    base_path = os.path.dirname(sys.executable)
+else:
+    # If running as script
+    base_path = os.path.dirname(os.path.abspath(__file__))
+
+# Create _internal directory for app data
+internal_dir = os.path.join(base_path, '_internal')
+os.makedirs(internal_dir, exist_ok=True)
+
+# Create cache directory in _internal folder
+cache_dir = os.path.join(internal_dir, 'cache')
+os.makedirs(cache_dir, exist_ok=True)
+
+# Create temp directory in _internal folder
+temp_dir = os.path.join(internal_dir, 'temp')
+os.makedirs(temp_dir, exist_ok=True)
+
+# Set torch hub directory
+os.environ['TORCH_HOME'] = cache_dir
+
+# Ensure the output directory exists (keep this separate from internal files)
+os.makedirs('output', exist_ok=True)
+
 from pydub import AudioSegment
 from PyQt6.QtWidgets import (
     QApplication,
@@ -15,7 +44,8 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QFileDialog,
     QStyle,
-    QSizePolicy
+    QSizePolicy,
+    QScrollArea
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QTime, QUrl
 from PyQt6.QtGui import QIcon, QKeySequence, QShortcut, QPixmap, QImage
@@ -26,9 +56,6 @@ from demucs.pretrained import get_model
 from demucs.apply import apply_model
 from demucs.audio import AudioFile
 import torchaudio
-
-# Ensure the output directory exists
-os.makedirs('output/temp_section', exist_ok=True)
 
 def apply_dark_mode(app):
     dark_stylesheet = """
@@ -132,12 +159,8 @@ def format_time_precise(seconds):
     minutes = int(seconds) // 60
     secs = seconds % 60
     
-    # Check if seconds is effectively a whole number
-    if abs(secs - round(secs)) < 0.001:  # If very close to a whole number
-        return f"{minutes:02}:{int(secs):02}"
-    else:
-        # Format with exactly 2 decimal places
-        return f"{minutes:02}:{secs:05.2f}"
+    # Always format with 2 decimal places, but only use 2 digits for seconds
+    return f"{minutes:02}:{secs:05.2f}"
 
 class AudioProcessor(QThread):
     status_update = pyqtSignal(str)
@@ -149,104 +172,153 @@ class AudioProcessor(QThread):
         self.song_path = song_path
 
     def run(self):
-        # Get original filename without extension
-        base_filename = os.path.splitext(os.path.basename(self.song_path))[0]
-        # Create timestamp
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        # Combine filename and timestamp for output directory
-        output_dir = os.path.join("output", f"{base_filename}_{timestamp}")
-        os.makedirs(output_dir, exist_ok=True)
+        # Redirect stdout and stderr to devnull to suppress console
+        with open(os.devnull, 'w') as devnull:
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            sys.stdout = devnull
+            sys.stderr = devnull
 
-        # Create info text file
-        info_path = os.path.join(output_dir, "section_info.txt")
-        with open(info_path, "w") as f:
-            f.write("Vocal Removal Sections:\n\n")
-            for idx, (start_time, end_time) in enumerate(self.sections, 1):
-                f.write(f"Section {idx}: {format_time(start_time)} to {format_time(end_time)}\n")
-            f.write(f"\nOriginal file: {os.path.basename(self.song_path)}\n")
-            f.write(f"Processed on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            try:
+                # Get original filename without extension
+                base_filename = os.path.splitext(os.path.basename(self.song_path))[0]
+                # Create timestamp
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                # Combine filename and timestamp for output directory
+                output_dir = os.path.join("output", f"{base_filename}_{timestamp}")
+                os.makedirs(output_dir, exist_ok=True)
 
-        # Load the model once
-        self.status_update.emit("Loading Demucs model...")
-        model = get_model('htdemucs')
-        model.eval()
-        
-        # Sort sections by start time to ensure they are processed in order
-        self.sections.sort(key=lambda x: x[0])
+                # Create info text file
+                info_path = os.path.join(output_dir, "section_info.txt")
+                with open(info_path, "w") as f:
+                    f.write("Vocal Removal Sections:\n\n")
+                    for idx, (start_time, end_time) in enumerate(self.sections, 1):
+                        f.write(f"Section {idx}: {format_time(start_time)} to {format_time(end_time)}\n")
+                    f.write(f"\nOriginal file: {os.path.basename(self.song_path)}\n")
+                    f.write(f"Processed on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
-        combined = AudioSegment.empty()  # Start with an empty audio segment
-        last_end_time = 0  # Keep track of the last section's end time
+                # Load the model from the correct location in packaged app
+                self.status_update.emit("Loading Demucs model...")
+                if getattr(sys, 'frozen', False):
+                    # If running as compiled executable
+                    base_path = os.path.dirname(sys.executable)
+                    model_path = os.path.join(base_path, '_internal')  # Point to PyInstaller's _internal
+                    os.environ['TORCH_HOME'] = model_path
+                    os.environ['DEMUCS_OFFLINE'] = '1'  # Prevent model download attempts
+                    
+                    # Verify model exists in PyInstaller's _internal directory
+                    expected_model_path = os.path.join(model_path, 'hub', 'checkpoints', '955717e8-8726e21a.th')
+                    if not os.path.exists(expected_model_path):
+                        self.status_update.emit(f"Error: Model file not found at expected path: {expected_model_path}")
+                        return
+                
+                model = get_model('htdemucs')
+                model.eval()
+                
+                # Sort sections by start time to ensure they are processed in order
+                self.sections.sort(key=lambda x: x[0])
 
-        for idx, (start_time, end_time) in enumerate(self.sections, start=1):
-            start_formatted = format_time_precise(start_time)
-            end_formatted = format_time_precise(end_time)
-            self.status_update.emit(f"Section {idx} processing from {start_formatted} to {end_formatted}...")
-            section = self.song[start_time * 1000:end_time * 1000]
-            section.export("temp_section.wav", format="wav")
+                combined = AudioSegment.empty()  # Start with an empty audio segment
+                last_end_time = 0  # Keep track of the last section's end time
 
-            # Use AudioFile to load the audio
-            audio_file = AudioFile("temp_section.wav")
-            wav = audio_file.read(streams=0, samplerate=model.samplerate, channels=model.audio_channels)
-            ref = wav.mean(0)
-            wav = (wav - ref.mean()) / ref.std()
-            
-            sources = apply_model(model, wav[None], device='cpu', progress=True, num_workers=1)[0]
-            sources = sources * ref.std() + ref.mean()
-            
-            # Mix all stems except vocals to create instrumental
-            # sources order is: [drums, bass, other, vocals]
-            drums = sources[0]
-            bass = sources[1]
-            other = sources[2]
-            # Combine all stems except vocals
-            instrumental = drums + bass + other
-            
-            # Save audio using torchaudio
-            torchaudio.save(
-                "temp_section_no_vocals.wav",
-                instrumental.cpu(),
-                sample_rate=int(model.samplerate)
-            )
+                for idx, (start_time, end_time) in enumerate(self.sections, start=1):
+                    start_formatted = format_time_precise(start_time)
+                    end_formatted = format_time_precise(end_time)
+                    self.status_update.emit(f"Section {idx} processing from {start_formatted} to {end_formatted}...")
+                    section = self.song[start_time * 1000:end_time * 1000]
+                    
+                    temp_section_path = os.path.join(temp_dir, "temp_section.wav")
+                    temp_novocals_path = os.path.join(temp_dir, "temp_section_no_vocals.wav")
+                    
+                    # Add FFmpeg parameters to increase analyzeduration and probesize
+                    section.export(
+                        temp_section_path,
+                        format="wav",
+                        parameters=[
+                            "-analyzeduration", "0",  # Disable analysis since we know it's audio
+                            "-probesize", "32",       # Minimal probe size
+                            "-loglevel", "error"      # Only show errors, not warnings
+                        ]
+                    )
 
-            # Load the processed instrumental track
-            instrumental = AudioSegment.from_file("temp_section_no_vocals.wav")
+                    # Use AudioFile to load the audio
+                    audio_file = AudioFile(temp_section_path)
+                    wav = audio_file.read(streams=0, samplerate=model.samplerate, channels=model.audio_channels)
+                    ref = wav.mean(0)
+                    wav = (wav - ref.mean()) / ref.std()
+                    
+                    sources = apply_model(model, wav[None], device='cpu', progress=False, num_workers=1)[0]
+                    sources = sources * ref.std() + ref.mean()
+                    
+                    # Mix all stems except vocals to create instrumental
+                    # sources order is: [drums, bass, other, vocals]
+                    drums = sources[0]
+                    bass = sources[1]
+                    other = sources[2]
+                    # Combine all stems except vocals
+                    instrumental = drums + bass + other
+                    
+                    # Save audio using torchaudio
+                    torchaudio.save(
+                        temp_novocals_path,
+                        instrumental.cpu(),
+                        sample_rate=int(model.samplerate)
+                    )
 
-            self.status_update.emit(f"Adding song parts for section {idx}...")
-            # Add the part before the section if necessary
-            if start_time > last_end_time:
-                part_before_section = self.song[last_end_time * 1000:start_time * 1000]
-                combined += part_before_section
+                    # Load the processed instrumental track
+                    instrumental = AudioSegment.from_file(temp_novocals_path)
 
-            # First add the section with vocals (original)
-            section_with_vocals = section
-            combined += section_with_vocals
+                    self.status_update.emit(f"Adding song parts for section {idx}...")
+                    # Add the part before the section if necessary
+                    if start_time > last_end_time:
+                        part_before_section = self.song[last_end_time * 1000:start_time * 1000]
+                        combined += part_before_section
 
-            # Then add the same section without vocals (instrumental)
-            combined += instrumental
+                    # First add the section with vocals (original)
+                    section_with_vocals = section
+                    combined += section_with_vocals
 
-            last_end_time = end_time  # Update the last end time
+                    # Then add the same section without vocals (instrumental)
+                    combined += instrumental
 
-        # Add the remaining part of the song after the last section
-        if last_end_time < len(self.song) / 1000:
-            remaining_part = self.song[last_end_time * 1000:]
-            combined += remaining_part
+                    last_end_time = end_time  # Update the last end time
 
-        self.status_update.emit("Exporting final result...")
-        # Export the final result
-        output_path = os.path.join(output_dir, "output.mp3")
-        combined.export(output_path, format="mp3")
+                # Add the remaining part of the song after the last section
+                if last_end_time < len(self.song) / 1000:
+                    remaining_part = self.song[last_end_time * 1000:]
+                    combined += remaining_part
 
-        self.status_update.emit("Cleaning up temporary files...")
-        # Clean up temporary files
-        try:
-            os.remove("temp_section.wav")
-            os.remove("temp_section_no_vocals.wav")
-        except:
-            pass
+                self.status_update.emit("Exporting final result...")
+                # Export the final result
+                output_path = os.path.join(output_dir, "output.mp3")
+                combined.export(output_path, format="mp3")
 
-        self.status_update.emit(f"Processing complete! Output saved in: {output_dir}")
+                self.status_update.emit("Cleaning up temporary files...")
+                # Clean up temporary files
+                try:
+                    if os.path.exists(temp_section_path):
+                        os.remove(temp_section_path)
+                    if os.path.exists(temp_novocals_path):
+                        os.remove(temp_novocals_path)
+                except:
+                    pass
+
+                self.status_update.emit(f"Processing complete! Output saved in: {output_dir}")
+
+            finally:
+                # Restore stdout and stderr
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
 
 class AudioApp(QMainWindow):
+    # Add constants at class level
+    MIN_TOP_ROW_HEIGHT = 100      # Load song and volume controls
+    MIN_TIMELINE_HEIGHT = 180     # Timeline section
+    MIN_SECTION_HEIGHT = 250      # Section controls
+    MIN_STATUS_HEIGHT = 20        # Status bar height
+    LAYOUT_SPACING = 10           # Spacing between components
+    LAYOUT_MARGINS = 20           # Total vertical margins (top + bottom)
+
     def __init__(self):
         super().__init__()
         
@@ -293,11 +365,20 @@ class AudioApp(QMainWindow):
         self.setup_shortcuts()
 
         # Add highlight color as class variable
-        self.highlight_color = "background-color: #FF4444;"
+        self.highlight_color = """
+            background-color: #FF4444;
+            color: white;
+        """
+        self.highlight_hover_color = """
+            background-color: #FF6666;
+            color: white;
+        """
         self.default_color = ""
-        
+
         # Initialize with mark start highlighted
-        self.mark_start_button.setStyleSheet(self.highlight_color)
+        self.set_button_highlight(self.mark_start_button, True)
+        self.set_button_highlight(self.mark_end_button, False)
+        self.set_button_highlight(self.add_section_button, False)
 
         # Initialize with both buttons disabled
         self.add_section_button.setEnabled(False)
@@ -339,18 +420,42 @@ class AudioApp(QMainWindow):
         return QIcon(QPixmap.fromImage(image))
 
     def initUI(self):
-        # Add constant for button height at the start of initUI
-        BUTTON_HEIGHT = 35  # Standard height for all buttons
-
-        # Set minimum window size instead of fixed
+        # Calculate total minimum height
+        min_window_height = (self.MIN_TOP_ROW_HEIGHT + 
+                           self.MIN_TIMELINE_HEIGHT + 
+                           self.MIN_SECTION_HEIGHT + 
+                           self.MIN_STATUS_HEIGHT + 
+                           (self.LAYOUT_SPACING * 3) +  # 3 spaces between 4 components
+                           self.LAYOUT_MARGINS)
+        
+        # Set minimum window size
         self.setMinimumWidth(500)
-        self.setMinimumHeight(750)  # Increased minimum height to ensure all elements are visible
-        self.resize(500, 750)  # Initial size matches minimum
+        self.setMinimumHeight(min_window_height)
+        
+        # Get screen size
+        screen = QApplication.primaryScreen().availableGeometry()
+        screen_height = screen.height()
+        screen_width = screen.width()
+        
+        # Calculate initial window size (80% of screen height, but not less than minimum)
+        window_height = max(min_window_height, min(750, int(screen_height * 0.5)))
+        window_width = 500
+        
+        # Set initial size
+        self.resize(window_width, window_height)
+        
+        # Center window on screen
+        self.move(
+            (screen_width - window_width) // 2,
+            (screen_height - window_height) // 2
+        )
+        
         self.setWindowTitle("Voice Section Remover")
         
         # Main layout with expanding margins
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)  # Add spacing between elements
 
         # Top row with Load Song and Volume Controls
         top_row = QHBoxLayout()
@@ -362,7 +467,7 @@ class AudioApp(QMainWindow):
         self.load_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         self.load_button.clicked.connect(self.load_song)
         self.load_button.setMinimumWidth(200)
-        self.load_button.setFixedHeight(BUTTON_HEIGHT)  # Set fixed height
+        self.load_button.setFixedHeight(35)  # Set fixed height
         song_layout.addWidget(self.load_button, alignment=Qt.AlignmentFlag.AlignCenter)
         song_group.setLayout(song_layout)
         top_row.addWidget(song_group)
@@ -515,10 +620,10 @@ class AudioApp(QMainWindow):
         selection_buttons_layout = QHBoxLayout()
         self.mark_start_button = QPushButton("Mark Start")
         self.mark_start_button.clicked.connect(self.start_selection)
-        self.mark_start_button.setFixedHeight(BUTTON_HEIGHT)
+        self.mark_start_button.setFixedHeight(35)
         self.mark_end_button = QPushButton("Mark End")
         self.mark_end_button.clicked.connect(self.end_selection)
-        self.mark_end_button.setFixedHeight(BUTTON_HEIGHT)
+        self.mark_end_button.setFixedHeight(35)
         selection_buttons_layout.addWidget(self.mark_start_button)
         selection_buttons_layout.addWidget(self.mark_end_button)
         top_section_layout.addLayout(selection_buttons_layout)
@@ -534,58 +639,110 @@ class AudioApp(QMainWindow):
         self.add_section_button = QPushButton("Add Section")
         self.add_section_button.clicked.connect(self.add_section)
         self.add_section_button.setEnabled(False)
-        self.add_section_button.setFixedHeight(BUTTON_HEIGHT)
+        self.add_section_button.setFixedHeight(35)
         section_buttons_layout.addWidget(self.add_section_button)
         
         self.cancel_section_button = QPushButton("Cancel")
         self.cancel_section_button.clicked.connect(self.cancel_section)
         self.cancel_section_button.setEnabled(False)
-        self.cancel_section_button.setFixedHeight(BUTTON_HEIGHT)
+        self.cancel_section_button.setFixedHeight(35)
         section_buttons_layout.addWidget(self.cancel_section_button)
         top_section_layout.addLayout(section_buttons_layout)
         
         # Add the fixed-height top section
         section_layout.addWidget(top_section)
         
-        # Section list (with minimum height)
+        # Section list with minimum height only
         self.section_list_widget = QListWidget()
-        self.section_list_widget.setMinimumHeight(60)  # Reduced from 100 to 60
-        self.section_list_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        section_layout.addWidget(self.section_list_widget, stretch=1)
+        self.section_list_widget.setMinimumHeight(80)  # Reduced from 100 to 80
+        self.section_list_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding
+        )
+        section_layout.addWidget(self.section_list_widget)
         
-        # Delete section button (fixed height)
-        self.delete_section_button = QPushButton("Delete Selected Section")
+        # Bottom section controls with fixed height
+        bottom_section = QWidget()
+        bottom_section.setFixedHeight(40)  # Fixed height for bottom controls
+        bottom_section.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed
+        )
+        bottom_layout = QHBoxLayout(bottom_section)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.delete_section_button = QPushButton("Delete Section")
         self.delete_section_button.clicked.connect(self.delete_section)
-        self.delete_section_button.setFixedHeight(BUTTON_HEIGHT)
-        section_layout.addWidget(self.delete_section_button)
-        
-        section_group.setLayout(section_layout)
-        main_layout.addWidget(section_group, stretch=1)
-
-        # Process button
         self.process_button = QPushButton("Process Sections")
         self.process_button.setObjectName("process_button")
         self.process_button.clicked.connect(self.process_sections)
-        self.process_button.setFixedHeight(BUTTON_HEIGHT)
-        main_layout.addWidget(self.process_button)
-
-        # Status label with default style for info messages
+        
+        bottom_layout.addWidget(self.delete_section_button)
+        bottom_layout.addWidget(self.process_button)
+        
+        section_layout.addWidget(bottom_section)
+        
+        # Remove maximum height constraint from section group
+        section_group.setMinimumHeight(250)  # Reduced from 300 to 250
+        section_group.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding
+        )
+        section_group.setLayout(section_layout)
+        
+        # Create a container for all content except status
+        content_container = QWidget()
+        content_layout = QVBoxLayout(content_container)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(10)
+        
+        # Create new top row layout
+        top_content = QHBoxLayout()
+        top_content.addWidget(song_group)
+        top_content.addWidget(volume_group, stretch=1)
+        content_layout.addLayout(top_content)
+        
+        content_layout.addWidget(timeline_group)
+        
+        # Make section group expand vertically
+        section_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        content_layout.addWidget(section_group)
+        
+        # Add content container to main layout
+        main_layout.addWidget(content_container)
+        
+        # Create main container to hold both content and status
+        main_container = QWidget()
+        main_container_layout = QVBoxLayout(main_container)
+        main_container_layout.setContentsMargins(10, 10, 10, 10)
+        main_container_layout.setSpacing(10)
+        
+        # Content container should stay fixed at top
+        content_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        main_container_layout.addWidget(content_container, alignment=Qt.AlignmentFlag.AlignTop)
+        
+        # Status container that expands downward
+        status_container = QWidget()
+        status_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        status_layout = QVBoxLayout(status_container)
+        status_layout.setContentsMargins(5, 2, 5, 2)
+        status_layout.setSpacing(0)
+        
         self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("""
-            color: #3498db;
-            font-size: 14px;
-            font-weight: bold;
-            padding: 2px;
-        """)
-        self.status_label.setMinimumHeight(30)
         self.status_label.setWordWrap(True)
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.status_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        main_layout.addWidget(self.status_label)
-
-        # Apply main layout
-        container = QWidget()
-        container.setLayout(main_layout)
-        self.setCentralWidget(container)
+        
+        # Set initial style
+        self.set_status_style("Ready", is_error=False)
+        
+        status_layout.addWidget(self.status_label)
+        main_container_layout.addWidget(status_container)
+        
+        # Set window size policy to allow vertical expansion
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.MinimumExpanding)
+        
+        self.setCentralWidget(main_container)
 
         # Apply stylesheet for modern look
         self.setStyleSheet("""
@@ -652,30 +809,15 @@ class AudioApp(QMainWindow):
             try:
                 self.update_status("Loading song...")
                 
-                # Stop current playback and reset state
-                if self.is_playing:
-                    self.player.stop()
-                    self.is_playing = False
-                    self.play_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaPlay))
-                    self.update_timer.stop()
-
-                # Reset all sections and UI elements
-                self.sections = []
-                self.section_list_widget.clear()
-                self.current_section_start = None
-                self.current_section_end = None
-                self.process_button.setEnabled(False)
-                self.add_section_button.setEnabled(False)
-                self.cancel_section_button.setEnabled(False)
-                
-                # Reset selection label and button styles
-                self.selection_label.setText("No section selected")
-                self.mark_start_button.setStyleSheet(self.highlight_color)
-                self.mark_end_button.setStyleSheet(self.default_color)
-                self.add_section_button.setStyleSheet(self.default_color)
-                
-                # Load with pydub (for processing)
-                self.song = AudioSegment.from_file(file)
+                # Load with pydub (for processing) with custom parameters
+                self.song = AudioSegment.from_file(
+                    file,
+                    parameters=[
+                        "-analyzeduration", "0",
+                        "-probesize", "32",
+                        "-loglevel", "error"
+                    ]
+                )
                 self.song_path = file
                 
                 # Load with QMediaPlayer (for playback)
@@ -875,25 +1017,25 @@ class AudioApp(QMainWindow):
         # If no start point is set, set start point
         if self.current_section_start is None:
             self.start_selection()
-            # Highlight mark end button
-            self.mark_start_button.setStyleSheet(self.default_color)
-            self.mark_end_button.setStyleSheet(self.highlight_color)
-            self.add_section_button.setStyleSheet(self.default_color)
+            # Highlight only mark end button
+            self.set_button_highlight(self.mark_start_button, False)  # Changed to False
+            self.set_button_highlight(self.mark_end_button, True)
+            self.set_button_highlight(self.add_section_button, False)  # Changed to False
         
         # If start is set but no end point, set end point
         elif self.current_section_end is None:
             self.end_selection()
             if self.add_section_button.isEnabled():  # Only if end point was valid
-                self.mark_end_button.setStyleSheet(self.default_color)
-                self.add_section_button.setStyleSheet(self.highlight_color)
+                self.set_button_highlight(self.mark_end_button, False)
+                self.set_button_highlight(self.add_section_button, True)
         
         # If both points are set, add the section
         elif self.add_section_button.isEnabled():
             self.add_section()
             # Reset to start state - highlight mark start
-            self.mark_start_button.setStyleSheet(self.highlight_color)
-            self.mark_end_button.setStyleSheet(self.default_color)
-            self.add_section_button.setStyleSheet(self.default_color)
+            self.set_button_highlight(self.mark_start_button, True)
+            self.set_button_highlight(self.mark_end_button, False)
+            self.set_button_highlight(self.add_section_button, False)
 
     def stop_audio(self):
         self.player.pause()
@@ -915,9 +1057,9 @@ class AudioApp(QMainWindow):
         self.cancel_section_button.setEnabled(False)
         
         # Reset button styles and highlight mark start
-        self.mark_start_button.setStyleSheet(self.highlight_color)
-        self.mark_end_button.setStyleSheet(self.default_color)
-        self.add_section_button.setStyleSheet(self.default_color)
+        self.set_button_highlight(self.mark_start_button, True)
+        self.set_button_highlight(self.mark_end_button, False)
+        self.set_button_highlight(self.add_section_button, False)
         
         # Update the selection label
         self.update_selection_label()
@@ -931,9 +1073,9 @@ class AudioApp(QMainWindow):
         # Use current timeline position immediately
         self.current_section_start = self.current_time
         # Update button highlighting
-        self.mark_start_button.setStyleSheet(self.default_color)
-        self.mark_end_button.setStyleSheet(self.highlight_color)
-        self.add_section_button.setStyleSheet(self.default_color)
+        self.set_button_highlight(self.mark_start_button, False)
+        self.set_button_highlight(self.mark_end_button, True)
+        self.set_button_highlight(self.add_section_button, False)
         self.cancel_section_button.setEnabled(True)  # Enable cancel button
         self.update_selection_label()
 
@@ -950,9 +1092,9 @@ class AudioApp(QMainWindow):
         if self.current_time > self.current_section_start:
             self.current_section_end = self.current_time
             # Update button highlighting
-            self.mark_end_button.setStyleSheet(self.default_color)
-            self.mark_start_button.setStyleSheet(self.default_color)
-            self.add_section_button.setStyleSheet(self.highlight_color)
+            self.set_button_highlight(self.mark_end_button, False)
+            self.set_button_highlight(self.mark_start_button, False)
+            self.set_button_highlight(self.add_section_button, True)
             self.update_selection_label()
             self.add_section_button.setEnabled(True)
         else:
@@ -990,12 +1132,12 @@ class AudioApp(QMainWindow):
         # Reset selection and buttons
         self.current_section_start = None
         self.current_section_end = None
-        self.add_section_button.setEnabled(False)
+        self.set_button_highlight(self.add_section_button, False)
         self.cancel_section_button.setEnabled(False)  # Disable cancel button
         # Reset button styles and highlight mark start for next section
-        self.mark_start_button.setStyleSheet(self.highlight_color)
-        self.mark_end_button.setStyleSheet(self.default_color)
-        self.add_section_button.setStyleSheet(self.default_color)
+        self.set_button_highlight(self.mark_start_button, True)
+        self.set_button_highlight(self.mark_end_button, False)
+        self.set_button_highlight(self.add_section_button, False)
         self.status_label.setText(f"Section {len(self.sections)} added successfully")
 
     def delete_section(self):
@@ -1045,22 +1187,30 @@ class AudioApp(QMainWindow):
         self.audio_processor.status_update.connect(self.update_status)
         self.audio_processor.start()
 
-    def update_status(self, message):
-        if message.lower().startswith("error"):
-            self.status_label.setStyleSheet("""
-                color: #e74c3c;
-                font-size: 14px;
+    def set_status_style(self, message, is_error=False):
+        """Helper method to consistently style status messages"""
+        if is_error:
+            style = """
+                color: #ff4444;  /* Bright red for errors */
+                font-size: 13px;
                 font-weight: bold;
-                padding: 2px;
-            """)
+                padding: 0px;
+                margin: 0px;
+            """
         else:
-            self.status_label.setStyleSheet("""
-                color: #3498db;
-                font-size: 14px;
+            style = """
+                color: #3498db;  /* Blue for normal messages */
+                font-size: 13px;
                 font-weight: bold;
-                padding: 2px;
-            """)
+                padding: 0px;
+                margin: 0px;
+            """
+        self.status_label.setStyleSheet(style)
         self.status_label.setText(message)
+
+    def update_status(self, message):
+        is_error = message.lower().startswith("error")
+        self.set_status_style(message, is_error)
 
     def closeEvent(self, event):
         # Stop update timer first
@@ -1103,9 +1253,13 @@ class AudioApp(QMainWindow):
             except:
                 pass
         
-        # Clean up temp directory if empty
+        # Clean up temp directory
         try:
-            os.rmdir('temp')
+            for file in os.listdir(temp_dir):
+                try:
+                    os.remove(os.path.join(temp_dir, file))
+                except:
+                    pass
         except:
             pass
         
@@ -1138,6 +1292,43 @@ class AudioApp(QMainWindow):
         self.was_playing = False
         self.play_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaPause))
         self.update_timer.start()
+
+    def resizeEvent(self, event):
+        """Override resize event to handle window expansion"""
+        super().resizeEvent(event)
+        
+        # Get the required height for the status text
+        status_height = self.status_label.sizeHint().height()
+        
+        # Calculate minimum content height (everything except status)
+        content_min_height = (
+            self.MIN_TOP_ROW_HEIGHT +
+            self.MIN_TIMELINE_HEIGHT +
+            self.MIN_SECTION_HEIGHT +
+            (self.LAYOUT_SPACING * 3) +
+            self.LAYOUT_MARGINS
+        )
+        
+        # Calculate total required height
+        required_height = content_min_height + status_height + self.LAYOUT_MARGINS
+        
+        # If window is too small, resize it
+        if self.height() < required_height:
+            self.resize(self.width(), required_height)
+
+    def set_button_highlight(self, button, highlighted=True):
+        if highlighted:
+            button.setStyleSheet("""
+                QPushButton {
+                    background-color: #FF4444;
+                    color: white;
+                }
+                QPushButton:hover {
+                    background-color: #FF6666;
+                }
+            """)
+        else:
+            button.setStyleSheet("")  # Reset to default style
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
