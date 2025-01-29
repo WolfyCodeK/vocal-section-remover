@@ -1,7 +1,5 @@
 import os
 import sys
-import shutil
-import subprocess
 
 # Set up base paths
 if getattr(sys, 'frozen', False):
@@ -39,13 +37,11 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QSlider,
     QListWidget,
-    QLineEdit,
     QWidget,
     QGroupBox,
     QFileDialog,
     QStyle,
     QSizePolicy,
-    QScrollArea
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QTime, QUrl
 from PyQt6.QtGui import QIcon, QKeySequence, QShortcut, QPixmap, QImage
