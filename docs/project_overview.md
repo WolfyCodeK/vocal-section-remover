@@ -2,29 +2,31 @@
 
 ## Project Structure
 
+```
 vocal_section_remover/
 ├── src/
-│ ├── audio/ # Audio processing components
-│ │ ├── file_loader.py # Handles audio file loading
-│ │ ├── player.py # Audio playback functionality
-│ │ └── processor.py # Vocal removal processing
-│ ├── gui/ # GUI components
-│ │ ├── widgets/ # Individual UI widgets
-│ │ │ ├── timeline.py
-│ │ │ ├── volume_control.py
-│ │ │ ├── section_controls.py
-│ │ │ └── status_bar.py
-│ │ ├── styles/ # UI styling
-│ │ │ └── dark_theme.py
-│ │ └── main_window.py # Main application window
-│ ├── utils/ # Utility functions and constants
-│ │ ├── constants.py # Application-wide constants
-│ │ ├── time_format.py # Time formatting utilities
-│ │ └── resources.py # Resource management
-│ └── main.py # Application entry point
-├── assets/ # Application assets
-│ └── app_icon.ico
-└── setup.py # Installation configuration
+│   ├── audio/                    # Audio processing components
+│   │   ├── file_loader.py        # Handles audio file loading
+│   │   ├── player.py             # Audio playback functionality
+│   │   └── processor.py          # Vocal removal processing
+│   ├── gui/                      # GUI components
+│   │   ├── widgets/              # Individual UI widgets
+│   │   │   ├── timeline.py
+│   │   │   ├── volume_control.py
+│   │   │   ├── section_controls.py
+│   │   │   └── status_bar.py
+│   │   ├── styles/              # UI styling
+│   │   │   └── dark_theme.py
+│   │   └── main_window.py       # Main application window
+│   ├── utils/                   # Utility functions and constants
+│   │   ├── constants.py         # Application-wide constants
+│   │   ├── time_format.py       # Time formatting utilities
+│   │   └── resources.py         # Resource management
+│   └── main.py                  # Application entry point
+├── assets/                      # Application assets
+│   └── app_icon.ico
+└── setup.py                     # Installation configuration
+```
 
 ## Component Overview
 
