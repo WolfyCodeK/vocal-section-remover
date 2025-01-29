@@ -1,8 +1,6 @@
 import os
 import sys
 from pydub import AudioSegment
-import subprocess
-import shutil
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -16,13 +14,18 @@ from PyQt6.QtWidgets import (
     QWidget,
     QGroupBox,
     QFileDialog,
-    QStyle
+    QStyle,
+    QSizePolicy
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QTime, QUrl
-from PyQt6.QtGui import QIcon, QKeySequence, QShortcut
+from PyQt6.QtGui import QIcon, QKeySequence, QShortcut, QPixmap, QImage
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 import resources
 import datetime
+from demucs.pretrained import get_model
+from demucs.apply import apply_model
+from demucs.audio import AudioFile
+import torchaudio
 
 # Ensure the output directory exists
 os.makedirs('output/temp_section', exist_ok=True)
@@ -151,6 +154,11 @@ class AudioProcessor(QThread):
             f.write(f"\nOriginal file: {os.path.basename(self.song_path)}\n")
             f.write(f"Processed on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
+        # Load the model once
+        self.status_update.emit("Loading Demucs model...")
+        model = get_model('htdemucs')
+        model.eval()
+        
         # Sort sections by start time to ensure they are processed in order
         self.sections.sort(key=lambda x: x[0])
 
@@ -159,37 +167,35 @@ class AudioProcessor(QThread):
 
         for idx, (start_time, end_time) in enumerate(self.sections, start=1):
             self.status_update.emit(f"Section {idx} processing from {start_time}s to {end_time}s...")
-            # Slice the song to the selected section
-            section = self.song[start_time * 1000:end_time * 1000]  # times in milliseconds
-            section.export("temp_section.wav", format="wav")  # Export as WAV for better separation
+            section = self.song[start_time * 1000:end_time * 1000]
+            section.export("temp_section.wav", format="wav")
 
-            self.status_update.emit(f"Running Demucs for section {idx}...")
-            # Run Demucs with completely hidden console
-            startupinfo = None
-            if os.name == 'nt':  # Windows
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW | subprocess.CREATE_NO_WINDOW
-                startupinfo.wShowWindow = subprocess.SW_HIDE
-
-            # Create a complete subprocess configuration
-            subprocess.run(
-                ["demucs", "-n", "htdemucs", "--two-stems=vocals", "temp_section.wav"],
-                startupinfo=startupinfo,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
-                shell=False
+            # Use AudioFile to load the audio
+            audio_file = AudioFile("temp_section.wav")
+            wav = audio_file.read(streams=0, samplerate=model.samplerate, channels=model.audio_channels)
+            ref = wav.mean(0)
+            wav = (wav - ref.mean()) / ref.std()
+            
+            sources = apply_model(model, wav[None], device='cpu', progress=True, num_workers=1)[0]
+            sources = sources * ref.std() + ref.mean()
+            
+            # Mix all stems except vocals to create instrumental
+            # sources order is: [drums, bass, other, vocals]
+            drums = sources[0]
+            bass = sources[1]
+            other = sources[2]
+            # Combine all stems except vocals
+            instrumental = drums + bass + other
+            
+            # Save audio using torchaudio
+            torchaudio.save(
+                "temp_section_no_vocals.wav",
+                instrumental.cpu(),
+                sample_rate=int(model.samplerate)
             )
 
-            self.status_update.emit(f"Loading instrumental version for section {idx}...")
-            # Ensure the directory exists and the file is created
-            instrumental_path = os.path.join('separated', 'htdemucs', 'temp_section', 'no_vocals.wav')
-            if not os.path.exists(instrumental_path):
-                self.status_update.emit(f"Error: Instrumental file not found for section {idx}")
-                return
-
-            # Load instrumental version (no_vocals.wav contains the instrumental track)
-            instrumental = AudioSegment.from_file(instrumental_path)
+            # Load the processed instrumental track
+            instrumental = AudioSegment.from_file("temp_section_no_vocals.wav")
 
             self.status_update.emit(f"Adding song parts for section {idx}...")
             # Add the part before the section if necessary
@@ -197,30 +203,33 @@ class AudioProcessor(QThread):
                 part_before_section = self.song[last_end_time * 1000:start_time * 1000]
                 combined += part_before_section
 
-            # Add the section with vocals (original section)
+            # First add the section with vocals (original)
             section_with_vocals = section
             combined += section_with_vocals
 
-            # Add the section without vocals (instrumental version)
-            section_without_vocals = instrumental
-            combined += section_without_vocals
+            # Then add the same section without vocals (instrumental)
+            combined += instrumental
 
-            last_end_time = end_time  # Update the last end time to the current section's end time
+            last_end_time = end_time  # Update the last end time
 
         # Add the remaining part of the song after the last section
-        if last_end_time < len(self.song) / 1000:  # Ensure there's more of the song after the last section
+        if last_end_time < len(self.song) / 1000:
             remaining_part = self.song[last_end_time * 1000:]
             combined += remaining_part
 
         self.status_update.emit("Exporting final result...")
-        # Update the export path
+        # Export the final result
         output_path = os.path.join(output_dir, "output.mp3")
         combined.export(output_path, format="mp3")
 
         self.status_update.emit("Cleaning up temporary files...")
         # Clean up temporary files
-        os.remove("temp_section.wav")
-        shutil.rmtree("separated", ignore_errors=True)
+        try:
+            os.remove("temp_section.wav")
+            os.remove("temp_section_no_vocals.wav")
+        except:
+            pass
+
         self.status_update.emit(f"Processing complete! Output saved in: {output_dir}")
 
 class AudioApp(QMainWindow):
@@ -295,14 +304,41 @@ class AudioApp(QMainWindow):
         # Initialize time display with whole seconds only
         self.time_display.setText("00:00 / 00:00")
 
+    def create_white_icon(self, standard_icon):
+        # Get the icon and convert to pixmap
+        icon = self.style().standardIcon(standard_icon)
+        pixmap = icon.pixmap(16, 16)
+        
+        # Create a new image in ARGB32 format
+        image = pixmap.toImage().convertToFormat(QImage.Format.Format_ARGB32)
+        
+        # Convert to white
+        for x in range(image.width()):
+            for y in range(image.height()):
+                color = image.pixelColor(x, y)
+                if color.alpha() > 0:  # If pixel is not transparent
+                    color.setRed(255)
+                    color.setGreen(255)
+                    color.setBlue(255)
+                    image.setPixelColor(x, y, color)
+        
+        return QIcon(QPixmap.fromImage(image))
+
     def initUI(self):
-        self.setWindowTitle("Audio Section Editor")
-        self.setGeometry(300, 300, 500, 600)
+        # Add constant for button height at the start of initUI
+        BUTTON_HEIGHT = 35  # Standard height for all buttons
 
-        # Main layout
+        # Set minimum window size instead of fixed
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(750)  # Increased minimum height to ensure all elements are visible
+        self.resize(500, 750)  # Initial size matches minimum
+        self.setWindowTitle("Voice Section Remover")
+        
+        # Main layout with expanding margins
         main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(10, 10, 10, 10)
 
-        # Top row with Load Song and Playback Controls
+        # Top row with Load Song and Volume Controls
         top_row = QHBoxLayout()
         
         # Song loading section
@@ -311,67 +347,68 @@ class AudioApp(QMainWindow):
         self.load_button = QPushButton(" Import File")
         self.load_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         self.load_button.clicked.connect(self.load_song)
-        self.load_button.setMinimumWidth(200)  # Make button wider
-        song_layout.addWidget(self.load_button, alignment=Qt.AlignmentFlag.AlignCenter)  # Center the button
+        self.load_button.setMinimumWidth(200)
+        self.load_button.setFixedHeight(BUTTON_HEIGHT)  # Set fixed height
+        song_layout.addWidget(self.load_button, alignment=Qt.AlignmentFlag.AlignCenter)
         song_group.setLayout(song_layout)
-        top_row.addWidget(song_group, 1)  # Add stretch factor of 1
-        
-        # Playback controls
-        playback_group = QGroupBox("Playback Controls")
-        playback_layout = QHBoxLayout()
-        
-        # Play button
-        self.play_button = QPushButton("Play")
-        self.play_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
-        self.play_button.clicked.connect(self.toggle_play)
-        self.play_button.setFixedWidth(100)
-        playback_layout.addWidget(self.play_button)
+        top_row.addWidget(song_group)
         
         # Volume controls
+        volume_group = QGroupBox("Volume")
         volume_layout = QHBoxLayout()
-        volume_layout.setSpacing(5)
+        volume_layout.setSpacing(10)  # Increased spacing between elements
+        volume_layout.setContentsMargins(25, 0, -5, 5)  # Reduced vertical margins, increased horizontal
         
+        # Volume icon
         volume_label = QLabel("🔊")
         volume_layout.addWidget(volume_label)
         
+        # Volume slider
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
-        self.volume_slider.setFixedWidth(100)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(50)
         self.volume_slider.valueChanged.connect(self.set_volume)
         self.volume_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.volume_slider.setTickInterval(25)
-        volume_layout.addWidget(self.volume_slider)
+        volume_layout.addWidget(self.volume_slider, stretch=1)
         
+        # Percentage label
         self.volume_percentage = QLabel("50%")
         self.volume_percentage.setFixedWidth(40)
         volume_layout.addWidget(self.volume_percentage)
         
-        playback_layout.addLayout(volume_layout)
-        playback_layout.addStretch()
-        
-        playback_group.setLayout(playback_layout)
-        top_row.addWidget(playback_group, 2)  # Add stretch factor of 2
+        volume_group.setLayout(volume_layout)
+        top_row.addWidget(volume_group, stretch=1)  # Add stretch factor
         
         # Add top row to main layout
         main_layout.addLayout(top_row)
 
-        # Timeline and volume layout
-        timeline_volume_row = QHBoxLayout()
-        
         # Timeline group
         timeline_group = QGroupBox("Timeline")
         timeline_layout = QVBoxLayout()
+        timeline_layout.setSpacing(8)  # Increased spacing between elements
+        timeline_layout.setContentsMargins(10, 5, 10, 10)  # Increased bottom margin
         
-        # Add song name label
+        # Add song name label with reduced height
         self.song_label = QLabel("No song loaded")
-        self.song_label.setStyleSheet("color: gray; font-style: italic;")
-        self.song_label.setAlignment(Qt.AlignmentFlag.AlignCenter)  # Center the text
+        self.song_label.setStyleSheet("""
+            color: gray;
+            font-style: italic;
+            padding: 2px;
+        """)
+        self.song_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.song_label.setMinimumHeight(25)
+        self.song_label.setWordWrap(True)
+        self.song_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         timeline_layout.addWidget(self.song_label)
         
-        # Add time display label
-        self.time_display = QLabel("00:00.0 / 00:00.0")
+        # Time display with added spacing
+        self.time_display = QLabel("00:00 / 00:00")
+        self.time_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
         timeline_layout.addWidget(self.time_display)
+        
+        # Add spacing before timeline slider
+        timeline_layout.addSpacing(5)
         
         # Timeline slider
         self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
@@ -379,108 +416,155 @@ class AudioApp(QMainWindow):
         self.timeline_slider.valueChanged.connect(self.on_slider_change)
         timeline_layout.addWidget(self.timeline_slider)
         
-        # Fine control buttons - more subtle design
-        fine_control_layout = QHBoxLayout()
-        fine_control_layout.setSpacing(4)
+        # Add spacing after timeline slider
+        timeline_layout.addSpacing(5)
         
-        back_01_button = QPushButton("←")
+        # Fine control and play buttons - more subtle design
+        control_layout = QHBoxLayout()
+        control_layout.setSpacing(4)
+        control_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
+        
+        # Back button
+        back_01_button = QPushButton()
         back_01_button.clicked.connect(lambda: self.adjust_time(-1.0))
         back_01_button.setFixedWidth(24)
         back_01_button.setFixedHeight(24)
+        back_01_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaSkipBackward))
         back_01_button.setStyleSheet("""
             QPushButton {
-                font-size: 10px;
                 padding: 0px;
                 background-color: #3E3E3E;
             }
+            QPushButton:hover {
+                background-color: #4E4E4E;
+            }
         """)
         
-        # Update label to show 1s increment
-        time_increment_label = QLabel("1s")
-        time_increment_label.setStyleSheet("font-size: 10px; color: #888888;")
-        time_increment_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Play button (icon only)
+        self.play_button = QPushButton()
+        self.play_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.play_button.clicked.connect(self.toggle_play)
+        self.play_button.setFixedWidth(24)
+        self.play_button.setFixedHeight(24)
+        self.play_button.setStyleSheet("""
+            QPushButton {
+                padding: 0px;
+                background-color: #3E3E3E;
+            }
+            QPushButton:hover {
+                background-color: #4E4E4E;
+            }
+        """)
         
-        forward_01_button = QPushButton("→")
+        # Forward button
+        forward_01_button = QPushButton()
         forward_01_button.clicked.connect(lambda: self.adjust_time(1.0))
         forward_01_button.setFixedWidth(24)
         forward_01_button.setFixedHeight(24)
+        forward_01_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaSkipForward))
         forward_01_button.setStyleSheet("""
             QPushButton {
-                font-size: 10px;
                 padding: 0px;
                 background-color: #3E3E3E;
             }
+            QPushButton:hover {
+                background-color: #4E4E4E;
+            }
         """)
-        
+
         # Center the controls with stretches
-        fine_control_layout.addStretch()
-        fine_control_layout.addWidget(back_01_button)
-        fine_control_layout.addWidget(time_increment_label)
-        fine_control_layout.addWidget(forward_01_button)
-        fine_control_layout.addStretch()
+        control_layout.addStretch()
+        control_layout.addWidget(back_01_button)
+        control_layout.addWidget(self.play_button)
+        control_layout.addWidget(forward_01_button)
+        control_layout.addStretch()
         
-        timeline_layout.addLayout(fine_control_layout)
+        timeline_layout.addLayout(control_layout)
         
         timeline_group.setLayout(timeline_layout)
-        timeline_volume_row.addWidget(timeline_group)
-        
-        main_layout.addLayout(timeline_volume_row)
+        main_layout.addWidget(timeline_group)
 
         # Section controls
-        section_group = QGroupBox("Sections")  
+        section_group = QGroupBox("Sections")
         section_layout = QVBoxLayout()
+        section_layout.setSpacing(10)
+        
+        # Top buttons section (fixed height)
+        top_section = QWidget()
+        top_section.setFixedHeight(120)  # Fixed height for buttons
+        top_section_layout = QVBoxLayout(top_section)
+        top_section_layout.setSpacing(5)
+        top_section_layout.setContentsMargins(0, 0, 0, 0)
         
         # Timeline selection buttons
         selection_buttons_layout = QHBoxLayout()
         self.mark_start_button = QPushButton("Mark Start")
         self.mark_start_button.clicked.connect(self.start_selection)
+        self.mark_start_button.setFixedHeight(BUTTON_HEIGHT)
         self.mark_end_button = QPushButton("Mark End")
         self.mark_end_button.clicked.connect(self.end_selection)
+        self.mark_end_button.setFixedHeight(BUTTON_HEIGHT)
         selection_buttons_layout.addWidget(self.mark_start_button)
         selection_buttons_layout.addWidget(self.mark_end_button)
-        section_layout.addLayout(selection_buttons_layout)
+        top_section_layout.addLayout(selection_buttons_layout)
         
         # Current selection display
         self.selection_label = QLabel("No section selected")
         self.selection_label.setStyleSheet("color: #00B4FF;")
-        section_layout.addWidget(self.selection_label)
+        self.selection_label.setFixedHeight(25)
+        top_section_layout.addWidget(self.selection_label)
         
-        # Add section and cancel buttons in a horizontal layout
+        # Add section and cancel buttons
         section_buttons_layout = QHBoxLayout()
-        
         self.add_section_button = QPushButton("Add Section")
         self.add_section_button.clicked.connect(self.add_section)
-        self.add_section_button.setEnabled(False)  # Disabled until a valid selection is made
+        self.add_section_button.setEnabled(False)
+        self.add_section_button.setFixedHeight(BUTTON_HEIGHT)
         section_buttons_layout.addWidget(self.add_section_button)
         
         self.cancel_section_button = QPushButton("Cancel")
         self.cancel_section_button.clicked.connect(self.cancel_section)
-        self.cancel_section_button.setEnabled(False)  # Disabled until marking starts
+        self.cancel_section_button.setEnabled(False)
+        self.cancel_section_button.setFixedHeight(BUTTON_HEIGHT)
         section_buttons_layout.addWidget(self.cancel_section_button)
+        top_section_layout.addLayout(section_buttons_layout)
         
-        section_layout.addLayout(section_buttons_layout)
+        # Add the fixed-height top section
+        section_layout.addWidget(top_section)
         
-        # Section list
+        # Section list (with minimum height)
         self.section_list_widget = QListWidget()
-        section_layout.addWidget(self.section_list_widget)
+        self.section_list_widget.setMinimumHeight(60)  # Reduced from 100 to 60
+        self.section_list_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        section_layout.addWidget(self.section_list_widget, stretch=1)
         
-        # Delete section button
+        # Delete section button (fixed height)
         self.delete_section_button = QPushButton("Delete Selected Section")
         self.delete_section_button.clicked.connect(self.delete_section)
+        self.delete_section_button.setFixedHeight(BUTTON_HEIGHT)
         section_layout.addWidget(self.delete_section_button)
         
         section_group.setLayout(section_layout)
-        main_layout.addWidget(section_group)
+        main_layout.addWidget(section_group, stretch=1)
 
         # Process button
         self.process_button = QPushButton("Process Sections")
         self.process_button.setObjectName("process_button")
         self.process_button.clicked.connect(self.process_sections)
+        self.process_button.setFixedHeight(BUTTON_HEIGHT)
         main_layout.addWidget(self.process_button)
 
         # Status label with default style for info messages
         self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("color: #3498db;")  # Default blue color
+        self.status_label.setStyleSheet("""
+            color: #3498db;
+            font-size: 14px;
+            font-weight: bold;
+            padding: 2px;
+        """)
+        self.status_label.setMinimumHeight(30)
+        self.status_label.setWordWrap(True)
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         main_layout.addWidget(self.status_label)
 
         # Apply main layout
@@ -563,7 +647,11 @@ class AudioApp(QMainWindow):
                 # Show filename
                 filename = os.path.basename(self.song_path)
                 self.song_label.setText(filename)
-                self.song_label.setStyleSheet("color: #FFFFFF; font-style: normal;")
+                self.song_label.setStyleSheet("""
+                    color: #FFFFFF;
+                    font-style: normal;
+                    padding: 2px;
+                """)
                 
                 # Calculate song length from pydub
                 self.song_length = len(self.song) / 1000  # Convert to seconds
@@ -587,11 +675,11 @@ class AudioApp(QMainWindow):
 
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
-            self.play_button.setText("Play")
+            self.play_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaPlay))
             self.is_playing = False
         else:
             self.player.play()
-            self.play_button.setText("Pause")
+            self.play_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaPause))
             self.is_playing = True
 
     def on_position_changed(self, position):
@@ -640,7 +728,7 @@ class AudioApp(QMainWindow):
                 self.stop_audio()
             else:
                 self.update_timer.stop()
-                self.play_button.setText("Play")
+                self.play_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaPlay))
 
     def update_time_display(self, current_time):
         if not self.song:
@@ -677,7 +765,7 @@ class AudioApp(QMainWindow):
         was_playing = self.is_playing
         if was_playing:
             self.is_playing = False
-            self.play_button.setText("Play")
+            self.play_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaPlay))
             self.update_timer.stop()
             self.player.pause()
         
@@ -747,7 +835,7 @@ class AudioApp(QMainWindow):
     def stop_audio(self):
         self.player.pause()
         self.is_playing = False
-        self.play_button.setText("Play")
+        self.play_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaPlay))
         self.update_timer.stop()
         # Reset position to start
         self.current_time = 0
@@ -905,9 +993,19 @@ class AudioApp(QMainWindow):
 
     def update_status(self, message):
         if message.lower().startswith("error"):
-            self.status_label.setStyleSheet("color: #e74c3c;")  # Red for errors
+            self.status_label.setStyleSheet("""
+                color: #e74c3c;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 2px;
+            """)
         else:
-            self.status_label.setStyleSheet("color: #3498db;")  # Blue for info
+            self.status_label.setStyleSheet("""
+                color: #3498db;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 2px;
+            """)
         self.status_label.setText(message)
 
     def closeEvent(self, event):
@@ -984,7 +1082,7 @@ class AudioApp(QMainWindow):
         self.player.play()
         self.is_playing = True
         self.was_playing = False
-        self.play_button.setText("Pause")
+        self.play_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaPause))
         self.update_timer.start()
 
 if __name__ == "__main__":
