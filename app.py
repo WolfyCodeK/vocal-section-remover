@@ -127,6 +127,18 @@ def format_time(seconds):
     secs = int(seconds) % 60
     return f"{minutes:02}:{secs:02}"
 
+def format_time_precise(seconds):
+    """Helper function to format time with decimal precision"""
+    minutes = int(seconds) // 60
+    secs = seconds % 60
+    
+    # Check if seconds is effectively a whole number
+    if abs(secs - round(secs)) < 0.001:  # If very close to a whole number
+        return f"{minutes:02}:{int(secs):02}"
+    else:
+        # Format with exactly 2 decimal places
+        return f"{minutes:02}:{secs:05.2f}"
+
 class AudioProcessor(QThread):
     status_update = pyqtSignal(str)
 
@@ -166,7 +178,9 @@ class AudioProcessor(QThread):
         last_end_time = 0  # Keep track of the last section's end time
 
         for idx, (start_time, end_time) in enumerate(self.sections, start=1):
-            self.status_update.emit(f"Section {idx} processing from {start_time}s to {end_time}s...")
+            start_formatted = format_time_precise(start_time)
+            end_formatted = format_time_precise(end_time)
+            self.status_update.emit(f"Section {idx} processing from {start_formatted} to {end_formatted}...")
             section = self.song[start_time * 1000:end_time * 1000]
             section.export("temp_section.wav", format="wav")
 
@@ -301,8 +315,8 @@ class AudioApp(QMainWindow):
 
         self.was_playing = False  # Add this to track playback state
 
-        # Initialize time display with whole seconds only
-        self.time_display.setText("00:00 / 00:00")
+        # Initialize time display with proper decimal places
+        self.time_display.setText("00:00.00 / 00:00.00")
 
     def create_white_icon(self, standard_icon):
         # Get the icon and convert to pixmap
@@ -403,17 +417,18 @@ class AudioApp(QMainWindow):
         timeline_layout.addWidget(self.song_label)
         
         # Time display with added spacing
-        self.time_display = QLabel("00:00 / 00:00")
+        self.time_display = QLabel("00:00.00 / 00:00.00")
         self.time_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
         timeline_layout.addWidget(self.time_display)
         
         # Add spacing before timeline slider
         timeline_layout.addSpacing(5)
         
-        # Timeline slider
+        # Timeline slider - multiply range by 100 to handle 2 decimal places
         self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
-        self.timeline_slider.setRange(0, 100)
+        self.timeline_slider.setRange(0, 0)  # Will be set when song loads
         self.timeline_slider.valueChanged.connect(self.on_slider_change)
+        self.timeline_slider.sliderReleased.connect(self.on_slider_released)
         timeline_layout.addWidget(self.timeline_slider)
         
         # Add spacing after timeline slider
@@ -635,7 +650,29 @@ class AudioApp(QMainWindow):
         file, _ = QFileDialog.getOpenFileName(self, "Load Song", "", "Audio Files (*.mp3 *.wav)")
         if file:
             try:
-                self.update_status("Loading song...")  # Use update_status instead of direct setText
+                self.update_status("Loading song...")
+                
+                # Stop current playback and reset state
+                if self.is_playing:
+                    self.player.stop()
+                    self.is_playing = False
+                    self.play_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaPlay))
+                    self.update_timer.stop()
+
+                # Reset all sections and UI elements
+                self.sections = []
+                self.section_list_widget.clear()
+                self.current_section_start = None
+                self.current_section_end = None
+                self.process_button.setEnabled(False)
+                self.add_section_button.setEnabled(False)
+                self.cancel_section_button.setEnabled(False)
+                
+                # Reset selection label and button styles
+                self.selection_label.setText("No section selected")
+                self.mark_start_button.setStyleSheet(self.highlight_color)
+                self.mark_end_button.setStyleSheet(self.default_color)
+                self.add_section_button.setStyleSheet(self.default_color)
                 
                 # Load with pydub (for processing)
                 self.song = AudioSegment.from_file(file)
@@ -653,13 +690,15 @@ class AudioApp(QMainWindow):
                     padding: 2px;
                 """)
                 
-                # Calculate song length from pydub
+                # Calculate song length from pydub and set slider range
                 self.song_length = len(self.song) / 1000  # Convert to seconds
-                self.timeline_slider.setRange(0, int(self.song_length))
+                # Multiply by 100 to handle 2 decimal places
+                self.timeline_slider.setRange(0, int(self.song_length * 100))
                 
-                # Reset current time and update display
-                self.current_time = 0
-                self.update_time_display(0)  # Update the time display immediately
+                # Reset current time and update display with proper decimal places
+                self.current_time = 0.0
+                self.timeline_slider.setValue(0)
+                self.time_display.setText(f"00:00.00 / {format_time_precise(self.song_length)}")
                 
                 self.update_status("Song loaded successfully!")
                 
@@ -667,6 +706,13 @@ class AudioApp(QMainWindow):
                 self.update_status(f"Error loading song: {str(e)}")
                 self.song = None
                 self.song_path = None
+                self.time_display.setText("00:00.00 / 00:00.00")
+                self.song_label.setText("No song loaded")
+                self.song_label.setStyleSheet("""
+                    color: gray;
+                    font-style: italic;
+                    padding: 2px;
+                """)
 
     def toggle_play(self):
         if self.song is None:
@@ -683,24 +729,49 @@ class AudioApp(QMainWindow):
             self.is_playing = True
 
     def on_position_changed(self, position):
-        # Convert position from milliseconds to seconds
+        # Convert position from milliseconds to seconds with 2 decimal places
         self.current_time = position / 1000
         self.timeline_slider.blockSignals(True)
-        self.timeline_slider.setValue(int(self.current_time))
+        self.timeline_slider.setValue(int(self.current_time * 100))  # Multiply by 100 for slider
         self.timeline_slider.blockSignals(False)
         self.update_time_display(self.current_time)
 
     def on_duration_changed(self, duration):
         # Convert duration from milliseconds to seconds
         self.song_length = duration / 1000
-        self.timeline_slider.setRange(0, int(self.song_length))
+        self.timeline_slider.setRange(0, int(self.song_length * 100))
 
     def on_slider_change(self):
         if not self.song:
             return
         
-        position = self.timeline_slider.value() * 1000  # Convert to milliseconds
-        self.player.setPosition(position)
+        # Store playing state when slider drag starts
+        if not hasattr(self, 'was_playing_before_seek'):
+            self.was_playing_before_seek = self.is_playing
+            if self.is_playing:
+                self.player.pause()
+                self.is_playing = False
+        
+        # Update position without starting playback
+        position = self.timeline_slider.value() / 100.0
+        self.player.setPosition(int(position * 1000))
+        self.current_time = position
+        self.update_time_display(position)
+
+    def on_slider_released(self):
+        if not self.song:
+            return
+        
+        # Resume playback if it was playing before
+        if hasattr(self, 'was_playing_before_seek') and self.was_playing_before_seek:
+            self.player.play()
+            self.is_playing = True
+            self.play_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaPause))
+            self.update_timer.start()
+        
+        # Clean up the temporary state
+        if hasattr(self, 'was_playing_before_seek'):
+            delattr(self, 'was_playing_before_seek')
 
     def set_volume(self):
         volume = self.volume_slider.value() / 100.0  # Convert to 0-1 range
@@ -709,13 +780,12 @@ class AudioApp(QMainWindow):
 
     def update_time(self):
         if self.is_playing and self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-            # Get current time in milliseconds
             current_ms = self.player.position()
             if current_ms >= 0:
                 self.current_time = current_ms / 1000.0
-                # Update slider position without triggering valueChanged signal
+                # Update slider position with 2 decimal precision
                 self.timeline_slider.blockSignals(True)
-                self.timeline_slider.setValue(int(self.current_time))  # Convert to whole seconds
+                self.timeline_slider.setValue(int(self.current_time * 100))
                 self.timeline_slider.blockSignals(False)
                 self.update_time_display(self.current_time)
                 
@@ -732,20 +802,13 @@ class AudioApp(QMainWindow):
 
     def update_time_display(self, current_time):
         if not self.song:
-            self.time_display.setText("00:00 / 00:00")
+            self.time_display.setText("00:00.00 / 00:00.00")
             return
         
-        # Format current time in whole seconds
-        minutes = int(current_time) // 60
-        seconds = int(current_time) % 60
-        
-        # Format total time
-        total_minutes = int(self.song_length) // 60
-        total_seconds = int(self.song_length) % 60
-        
-        self.time_display.setText(
-            f"{minutes:02}:{seconds:02} / {total_minutes:02}:{total_seconds:02}"
-        )
+        # Always format both times with format_time_precise
+        current_formatted = format_time_precise(float(current_time))
+        total_formatted = format_time_precise(float(self.song_length))
+        self.time_display.setText(f"{current_formatted} / {total_formatted}")
 
     def adjust_time(self, delta):
         if not self.song:
@@ -757,8 +820,8 @@ class AudioApp(QMainWindow):
             return
         self.last_seek_time = current_time
             
-        # Calculate new time
-        new_time = round(self.current_time + delta, 1)
+        # Calculate new time with 2 decimal precision
+        new_time = round(self.current_time + delta, 2)  # Changed from round(..., 1)
         new_time = max(0, min(new_time, self.song_length))
         
         # Store current playing state but don't resume after
@@ -771,7 +834,7 @@ class AudioApp(QMainWindow):
         
         # Set the new position directly without using the debounce mechanism
         self.current_time = new_time
-        self.timeline_slider.setValue(int(new_time))
+        self.timeline_slider.setValue(int(new_time * 100))
         if self.player.duration() > 0:
             # Just set position in milliseconds directly
             self.player.setPosition(int(new_time * 1000))
@@ -837,10 +900,10 @@ class AudioApp(QMainWindow):
         self.is_playing = False
         self.play_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaPlay))
         self.update_timer.stop()
-        # Reset position to start
-        self.current_time = 0
+        # Reset position to start with proper decimal places
+        self.current_time = 0.0
         self.timeline_slider.setValue(0)
-        self.update_time_display(0)
+        self.update_time_display(0.0)  # Pass as float
 
     def cancel_section(self):
         # Reset selection
@@ -897,20 +960,13 @@ class AudioApp(QMainWindow):
 
     def update_selection_label(self):
         if self.current_section_start is not None:
-            start_min = int(self.current_section_start) // 60
-            start_sec = int(self.current_section_start) % 60
+            start_formatted = format_time_precise(self.current_section_start)
             
             if self.current_section_end is not None:
-                end_min = int(self.current_section_end) // 60
-                end_sec = int(self.current_section_end) % 60
-                
-                self.selection_label.setText(
-                    f"Selected: {start_min:02}:{start_sec:02} to {end_min:02}:{end_sec:02}"
-                )
+                end_formatted = format_time_precise(self.current_section_end)
+                self.selection_label.setText(f"Selected: {start_formatted} to {end_formatted}")
             else:
-                self.selection_label.setText(
-                    f"Start: {start_min:02}:{start_sec:02} - Click 'Mark End' to set end point"
-                )
+                self.selection_label.setText(f"Start: {start_formatted} - Click 'Mark End' to set end point")
         else:
             self.selection_label.setText("No section selected")
 
@@ -921,13 +977,11 @@ class AudioApp(QMainWindow):
             
         self.sections.append((self.current_section_start, self.current_section_end))
         
-        start_min = int(self.current_section_start) // 60
-        start_sec = int(self.current_section_start) % 60
-        end_min = int(self.current_section_end) // 60
-        end_sec = int(self.current_section_end) % 60
+        start_formatted = format_time_precise(self.current_section_start)
+        end_formatted = format_time_precise(self.current_section_end)
         
         self.section_list_widget.addItem(
-            f"Section {len(self.sections)}: {start_min:02}:{start_sec:02} to {end_min:02}:{end_sec:02}"
+            f"Section {len(self.sections)}: {start_formatted} to {end_formatted}"
         )
         
         # Enable process button when we have sections
