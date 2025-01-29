@@ -162,6 +162,23 @@ def format_time_precise(seconds):
     # Always format with 2 decimal places, but only use 2 digits for seconds
     return f"{minutes:02}:{secs:05.2f}"
 
+class FileLoader(QThread):
+    finished = pyqtSignal(tuple)
+    status_update = pyqtSignal(str)
+
+    def __init__(self, file_path):
+        super().__init__()
+        self.file_path = file_path
+
+    def run(self):
+        try:
+            self.status_update.emit("Loading audio file...")
+            song = AudioSegment.from_file(self.file_path)
+            self.finished.emit((song, self.file_path))
+        except Exception as e:
+            self.status_update.emit(f"Error loading file: {str(e)}")
+            self.finished.emit((None, None))
+
 class AudioProcessor(QThread):
     status_update = pyqtSignal(str)
 
@@ -465,7 +482,7 @@ class AudioApp(QMainWindow):
         song_layout = QVBoxLayout()
         self.load_button = QPushButton(" Import File")
         self.load_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
-        self.load_button.clicked.connect(self.load_song)
+        self.load_button.clicked.connect(self.load_file)
         self.load_button.setMinimumWidth(200)
         self.load_button.setFixedHeight(35)  # Set fixed height
         song_layout.addWidget(self.load_button, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -489,6 +506,16 @@ class AudioApp(QMainWindow):
         self.volume_slider.valueChanged.connect(self.set_volume)
         self.volume_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.volume_slider.setTickInterval(25)
+        self.volume_slider.mousePressEvent = self.volume_mouse_press
+        self.volume_slider.mouseMoveEvent = self.volume_mouse_move
+        self.volume_slider.mouseReleaseEvent = self.volume_mouse_release
+        self.volume_slider.enterEvent = self.volume_mouse_enter
+        self.volume_slider.leaveEvent = self.volume_mouse_leave
+        
+        # Set cursor to pointing finger when hovering over volume slider
+        self.volume_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        # Add volume slider to layout
         volume_layout.addWidget(self.volume_slider, stretch=1)
         
         # Percentage label
@@ -529,11 +556,23 @@ class AudioApp(QMainWindow):
         # Add spacing before timeline slider
         timeline_layout.addSpacing(5)
         
-        # Timeline slider - multiply range by 100 to handle 2 decimal places
+        # Timeline slider setup
         self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
-        self.timeline_slider.setRange(0, 0)  # Will be set when song loads
-        self.timeline_slider.valueChanged.connect(self.on_slider_change)
-        self.timeline_slider.sliderReleased.connect(self.on_slider_released)
+        self.timeline_slider.setMinimum(0)
+        self.timeline_slider.setMaximum(0)
+        self.timeline_slider.valueChanged.connect(self.on_timeline_change)
+        self.timeline_slider.sliderPressed.connect(self.on_timeline_press)
+        self.timeline_slider.sliderReleased.connect(self.on_timeline_release)
+        self.timeline_slider.mousePressEvent = self.timeline_mouse_press
+        self.timeline_slider.mouseMoveEvent = self.timeline_mouse_move
+        self.timeline_slider.mouseReleaseEvent = self.timeline_mouse_release
+        self.timeline_slider.enterEvent = self.timeline_mouse_enter
+        self.timeline_slider.leaveEvent = self.timeline_mouse_leave
+        
+        # Set cursor to pointing finger when hovering over timeline
+        self.timeline_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        # Add timeline slider to layout
         timeline_layout.addWidget(self.timeline_slider)
         
         # Add spacing after timeline slider
@@ -803,58 +842,90 @@ class AudioApp(QMainWindow):
             }
         """)
         
-    def load_song(self):
-        file, _ = QFileDialog.getOpenFileName(self, "Load Song", "", "Audio Files (*.mp3 *.wav)")
-        if file:
-            try:
-                self.update_status("Loading song...")
-                
-                # Load with pydub (for processing) with custom parameters
-                self.song = AudioSegment.from_file(
-                    file,
-                    parameters=[
-                        "-analyzeduration", "0",
-                        "-probesize", "32",
-                        "-loglevel", "error"
-                    ]
-                )
-                self.song_path = file
-                
-                # Load with QMediaPlayer (for playback)
-                self.player.setSource(QUrl.fromLocalFile(file))
-                
-                # Show filename
-                filename = os.path.basename(self.song_path)
-                self.song_label.setText(filename)
-                self.song_label.setStyleSheet("""
-                    color: #FFFFFF;
-                    font-style: normal;
-                    padding: 2px;
-                """)
-                
-                # Calculate song length from pydub and set slider range
-                self.song_length = len(self.song) / 1000  # Convert to seconds
-                # Multiply by 100 to handle 2 decimal places
-                self.timeline_slider.setRange(0, int(self.song_length * 100))
-                
-                # Reset current time and update display with proper decimal places
-                self.current_time = 0.0
-                self.timeline_slider.setValue(0)
-                self.time_display.setText(f"00:00.00 / {format_time_precise(self.song_length)}")
-                
-                self.update_status("Song loaded successfully!")
-                
-            except Exception as e:
-                self.update_status(f"Error loading song: {str(e)}")
-                self.song = None
-                self.song_path = None
-                self.time_display.setText("00:00.00 / 00:00.00")
-                self.song_label.setText("No song loaded")
-                self.song_label.setStyleSheet("""
-                    color: gray;
-                    font-style: italic;
-                    padding: 2px;
-                """)
+    def load_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Audio File",
+            "",
+            "Audio Files (*.mp3 *.wav);;All Files (*.*)"
+        )
+        
+        if file_path:
+            # Clean up previous file
+            if self.song:
+                self.cleanup_current_file()
+            
+            # Disable UI elements during loading
+            self.setEnabled(False)
+            self.status_label.setText("Loading file...")
+            
+            # Create and start file loader thread
+            self.file_loader = FileLoader(file_path)
+            self.file_loader.finished.connect(self.on_file_loaded)
+            self.file_loader.status_update.connect(self.update_status)
+            self.file_loader.start()
+
+    def cleanup_current_file(self):
+        # Stop playback
+        if self.is_playing:
+            self.stop_audio()
+        
+        # Clear sections
+        self.sections.clear()
+        self.section_list_widget.clear()
+        
+        # Reset selection
+        self.current_section_start = None
+        self.current_section_end = None
+        
+        # Reset UI elements
+        self.selection_label.setText("No section selected")
+        self.process_button.setEnabled(False)
+        self.add_section_button.setEnabled(False)
+        self.cancel_section_button.setEnabled(False)
+        
+        # Reset button highlights
+        self.set_button_highlight(self.mark_start_button, True)
+        self.set_button_highlight(self.mark_end_button, False)
+        self.set_button_highlight(self.add_section_button, False)
+
+    def on_file_loaded(self, result):
+        song, file_path = result
+        
+        if song is None:
+            self.setEnabled(True)
+            return
+        
+        # Update the app with the loaded file
+        self.song = song
+        self.song_path = file_path
+        self.song_length = len(self.song) / 1000.0  # Convert to seconds
+        
+        # Reset timeline
+        self.current_time = 0.0
+        self.timeline_slider.setValue(0)
+        
+        # Set up media player
+        self.player.setSource(QUrl.fromLocalFile(file_path))
+        
+        # Update UI
+        self.timeline_slider.setMaximum(int(self.song_length * 100))
+        self.update_time_display(0)
+        
+        # Update window title with filename
+        filename = os.path.basename(file_path)
+        self.setWindowTitle(f"Voice Section Remover - {filename}")
+        self.song_label.setText(filename)
+        self.song_label.setStyleSheet("""
+            color: #FFFFFF;
+            font-style: normal;
+            padding: 2px;
+        """)
+        
+        self.status_label.setText("File loaded successfully")
+        
+        # Re-enable UI
+        self.setEnabled(True)
 
     def toggle_play(self):
         if self.song is None:
@@ -883,7 +954,7 @@ class AudioApp(QMainWindow):
         self.song_length = duration / 1000
         self.timeline_slider.setRange(0, int(self.song_length * 100))
 
-    def on_slider_change(self):
+    def on_timeline_change(self):
         if not self.song:
             return
         
@@ -900,20 +971,25 @@ class AudioApp(QMainWindow):
         self.current_time = position
         self.update_time_display(position)
 
-    def on_slider_released(self):
-        if not self.song:
-            return
+    def on_timeline_press(self):
+        # Store playback state
+        self.was_playing = self.is_playing
+        if self.is_playing:
+            self.player.pause()
+            self.is_playing = False
+            self.play_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaPlay))
+            self.update_timer.stop()
+        
+        # Change cursor to closed hand while dragging
+        self.timeline_slider.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def on_timeline_release(self):
+        # Change cursor back to pointing finger
+        self.timeline_slider.setCursor(Qt.CursorShape.PointingHandCursor)
         
         # Resume playback if it was playing before
-        if hasattr(self, 'was_playing_before_seek') and self.was_playing_before_seek:
-            self.player.play()
-            self.is_playing = True
-            self.play_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaPause))
-            self.update_timer.start()
-        
-        # Clean up the temporary state
-        if hasattr(self, 'was_playing_before_seek'):
-            delattr(self, 'was_playing_before_seek')
+        if self.was_playing:
+            QTimer.singleShot(100, self.resume_playback)
 
     def set_volume(self):
         volume = self.volume_slider.value() / 100.0  # Convert to 0-1 range
@@ -1329,6 +1405,116 @@ class AudioApp(QMainWindow):
             """)
         else:
             button.setStyleSheet("")  # Reset to default style
+
+    def timeline_mouse_enter(self, event):
+        # Show pointing finger cursor when hovering
+        self.timeline_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def timeline_mouse_leave(self, event):
+        # Reset cursor when mouse leaves the slider
+        if not QApplication.mouseButtons() & Qt.MouseButton.LeftButton:
+            self.timeline_slider.unsetCursor()
+
+    def timeline_mouse_press(self, event):
+        if not self.song:
+            return
+            
+        # Store playback state
+        self.was_playing = self.is_playing
+        if self.is_playing:
+            self.player.pause()
+            self.is_playing = False
+            self.play_button.setIcon(self.create_white_icon(QStyle.StandardPixmap.SP_MediaPlay))
+            self.update_timer.stop()
+        
+        # Change cursor to closed hand while dragging
+        self.timeline_slider.setCursor(Qt.CursorShape.ClosedHandCursor)
+        
+        # Calculate position based on click location
+        width = self.timeline_slider.width()
+        x = event.position().x()
+        value = (x / width) * self.timeline_slider.maximum()
+        self.timeline_slider.setValue(int(value))
+        
+        # Update position
+        position = value / 100.0
+        self.player.setPosition(int(position * 1000))
+        self.current_time = position
+        self.update_time_display(position)
+
+    def timeline_mouse_move(self, event):
+        if not self.song:
+            return
+            
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            # Keep closed hand cursor while dragging
+            self.timeline_slider.setCursor(Qt.CursorShape.ClosedHandCursor)
+            # Calculate position based on mouse location
+            width = self.timeline_slider.width()
+            x = event.position().x()
+            # Clamp x to slider width
+            x = max(0, min(x, width))
+            value = (x / width) * self.timeline_slider.maximum()
+            self.timeline_slider.setValue(int(value))
+            
+            # Update position
+            position = value / 100.0
+            self.player.setPosition(int(position * 1000))
+            self.current_time = position
+            self.update_time_display(position)
+        else:
+            # Show pointing finger when not dragging
+            self.timeline_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def timeline_mouse_release(self, event):
+        # Change cursor back to pointing finger when releasing mouse button
+        self.timeline_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        # Resume playback if it was playing
+        if self.was_playing:
+            QTimer.singleShot(100, self.resume_playback)
+
+    def volume_mouse_enter(self, event):
+        # Show pointing finger cursor when hovering
+        self.volume_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def volume_mouse_leave(self, event):
+        # Reset cursor when mouse leaves the slider
+        if not QApplication.mouseButtons() & Qt.MouseButton.LeftButton:
+            self.volume_slider.unsetCursor()
+
+    def volume_mouse_press(self, event):
+        # Change cursor to closed hand while dragging
+        self.volume_slider.setCursor(Qt.CursorShape.ClosedHandCursor)
+        
+        # Calculate volume based on click location
+        width = self.volume_slider.width()
+        x = event.position().x()
+        value = (x / width) * self.volume_slider.maximum()
+        self.volume_slider.setValue(int(value))
+
+    def volume_mouse_move(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            # Keep closed hand cursor while dragging
+            self.volume_slider.setCursor(Qt.CursorShape.ClosedHandCursor)
+            # Calculate volume based on mouse location
+            width = self.volume_slider.width()
+            x = event.position().x()
+            # Clamp x to slider width
+            x = max(0, min(x, width))
+            value = (x / width) * self.volume_slider.maximum()
+            self.volume_slider.setValue(int(value))
+        else:
+            # Show pointing finger when not dragging
+            self.volume_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def volume_mouse_release(self, event):
+        # Change cursor back to pointing finger when releasing mouse button
+        self.volume_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        # Resume playback if it was playing
+        if self.was_playing:
+            QTimer.singleShot(100, self.resume_playback)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

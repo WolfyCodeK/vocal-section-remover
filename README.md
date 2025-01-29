@@ -1,6 +1,6 @@
 # Voice Section Remover
 
-A desktop application that lets you remove vocals from specific sections of songs while keeping the instrumental background.
+A desktop application that lets you remove vocals from specific sections of songs while keeping the instrumental background. Perfect for creating custom karaoke versions or removing unwanted vocal parts from songs.
 
 ## What It Does
 
@@ -8,6 +8,7 @@ A desktop application that lets you remove vocals from specific sections of song
 - Play and navigate through songs
 - Mark sections where you want vocals removed
 - Process multiple sections at once
+- Keep the original file untouched - creates a new edited version
 
 ## How to Use
 
