@@ -1,5 +1,14 @@
-from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                           QPushButton, QFileDialog, QGroupBox, QLabel, QStyle)
+from PyQt6.QtWidgets import (
+    QMainWindow, 
+    QWidget, 
+    QVBoxLayout, 
+    QHBoxLayout, 
+    QPushButton, 
+    QFileDialog, 
+    QGroupBox, 
+    QLabel, 
+    QStyle
+)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QKeySequence, QShortcut
 import os
@@ -11,7 +20,11 @@ from .widgets.status_bar import StatusBar
 from audio.player import AudioPlayer
 from audio.file_loader import FileLoader
 from audio.processor import AudioProcessor
-from utils.constants import (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, SHORTCUTS)
+from utils.constants import (
+    MIN_WINDOW_WIDTH, 
+    MIN_WINDOW_HEIGHT, 
+    SHORTCUTS
+)
 
 class MainWindow(QMainWindow):
     def __init__(self):

@@ -1,4 +1,10 @@
-from PyQt6.QtWidgets import QWidget, QSlider, QLabel, QHBoxLayout, QGroupBox
+from PyQt6.QtWidgets import (
+    QWidget, 
+    QSlider, 
+    QLabel, 
+    QHBoxLayout, 
+    QGroupBox
+)
 from PyQt6.QtCore import Qt, pyqtSignal
 from utils.constants import DEFAULT_VOLUME
 

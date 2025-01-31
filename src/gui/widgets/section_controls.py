@@ -1,5 +1,11 @@
-from PyQt6.QtWidgets import (QWidget, QPushButton, QLabel, QVBoxLayout, 
-                           QHBoxLayout, QListWidget, QGroupBox)
+from PyQt6.QtWidgets import (
+    QWidget,
+    QPushButton, 
+    QLabel, 
+    QVBoxLayout, 
+    QHBoxLayout, 
+    QListWidget, 
+)
 from PyQt6.QtCore import pyqtSignal
 from utils.time_format import format_time_precise
 from utils.constants import COLORS

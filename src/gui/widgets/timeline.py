@@ -1,8 +1,13 @@
-from PyQt6.QtWidgets import QWidget, QSlider, QLabel, QVBoxLayout, QHBoxLayout, QPushButton
+from PyQt6.QtWidgets import (
+    QWidget, 
+    QSlider, 
+    QLabel, 
+    QVBoxLayout, 
+    QHBoxLayout, 
+    QPushButton
+)
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QIcon
 from utils.time_format import format_time_precise
-from utils.constants import COLORS
 
 class Timeline(QWidget):
     position_changed = pyqtSignal(float)
